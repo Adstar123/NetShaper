@@ -1,0 +1,53 @@
+{
+  "name": "netshaper",
+  "version": "0.1.0",
+  "description": "A network traffic management tool",
+  "main": "dist/main.js",
+  "scripts": {
+  "start": "electron .",
+  "build": "webpack --config webpack.config.js && webpack --config electron.webpack.config.js",
+  "rebuild": "electron-rebuild",
+  "dev": "webpack serve --port 9000 --hot --host 127.0.0.1",
+  "electron-dev": "cross-env NODE_ENV=development electron .",
+  "package": "electron-builder build --win --x64",
+  "postinstall": "npm run rebuild"
+},
+  "keywords": [
+    "network",
+    "bandwidth",
+    "management"
+  ],
+  "author": "Adam Jarick",
+  "license": "MIT",
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
+    "@types/node": "^22.15.2",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "bindings": "^1.5.0",
+    "cross-env": "^7.0.3",
+    "css-loader": "^7.1.2",
+    "electron": "^35.2.1",
+    "electron-builder": "^26.0.12",
+    "electron-rebuild": "^3.2.9",
+    "file-loader": "^6.2.0",
+    "html-webpack-plugin": "^5.6.3",
+    "node-addon-api": "^8.3.1",
+    "rimraf": "^6.0.1",
+    "style-loader": "^4.0.0",
+    "ts-loader": "^9.5.2",
+    "typescript": "^5.8.3",
+    "webpack": "^5.99.7",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.1"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "@mui/icons-material": "^7.0.2",
+    "@mui/material": "^7.0.2",
+    "electron-util": "^0.18.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  }
+}

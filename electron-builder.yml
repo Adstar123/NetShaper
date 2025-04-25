@@ -1,0 +1,22 @@
+appId: com.yourusername.netshaper
+productName: NetShaper
+copyright: Copyright © 2023 Your Name
+directories:
+  output: dist-electron
+  buildResources: resources
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - build/Release/network.node
+win:
+  target: nsis
+  icon: resources/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: NetShaper
+  uninstallDisplayName: NetShaper
+asar: true
