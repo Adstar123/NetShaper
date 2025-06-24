@@ -1,5 +1,6 @@
-import { app, BrowserWindow, Menu, dialog } from 'electron';
+import { app, BrowserWindow, Menu, dialog, ipcMain } from 'electron';
 import * as path from 'path';
+import { NetworkModule, DeviceInfo, TrafficControl } from '../common/types';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -19,8 +20,8 @@ function createWindow() {
     width: 1024,
     height: 768,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      nodeIntegration: false,
+      contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     },
     title: 'NetShaper',
@@ -30,11 +31,17 @@ function createWindow() {
 
   // Load the index.html
   if (isDevelopment) {
-    mainWindow.loadURL('http://localhost:9000');
+    // First try to load from dev server, fallback to file if that fails
+    mainWindow.loadURL('http://localhost:9000').catch(() => {
+      console.log('Dev server not available, loading from file...');
+      if (mainWindow) {
+        mainWindow.loadFile(path.join(__dirname, 'index.html'));
+      }
+    });
     // Open DevTools in development mode
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    mainWindow.loadFile(path.join(__dirname, 'index.html'));
   }
 
   // Show window when ready to prevent flickering
@@ -133,5 +140,131 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+// Load the native network module
+let networkModule: NetworkModule | null = null;
+
+// Load the native network module
+function loadNetworkModule() {
+  const possiblePaths = [
+    path.join(__dirname, '../build/Release/network.node'),
+    path.join(process.cwd(), 'build/Release/network.node'),
+    path.join(process.cwd(), 'dist/build/Release/network.node'),
+    path.resolve('./build/Release/network.node'),
+    path.resolve('./dist/build/Release/network.node')
+  ];
+
+  for (const modulePath of possiblePaths) {
+    try {
+      console.log('Trying to load network module from:', modulePath);
+      
+      // Check if file exists first
+      const fs = require('fs');
+      if (fs.existsSync(modulePath)) {
+        // Use eval to prevent webpack from trying to resolve this
+        const moduleFunc = eval('require');
+        networkModule = moduleFunc(modulePath) as NetworkModule;
+        console.log('Network module loaded successfully from:', modulePath);
+        return;
+      } else {
+        console.log('File does not exist at:', modulePath);
+      }
+    } catch (error) {
+      console.log('Failed to load from', modulePath, ':', error instanceof Error ? error.message : String(error));
+    }
+  }
+  
+  console.error('Could not load network module from any of the attempted paths');
+}
+
+// Try to load the module
+try {
+  loadNetworkModule();
+} catch (error) {
+  console.error('Fatal error loading network module:', error);
+}
+
 // Handle IPC messages from renderer process
-// We'll add these in later stages
+ipcMain.handle('network:scanDevices', async (): Promise<DeviceInfo[]> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return [];
+  }
+  
+  try {
+    return networkModule.scanDevices();
+  } catch (error) {
+    console.error('Error scanning devices:', error);
+    return [];
+  }
+});
+
+ipcMain.handle('network:getDeviceDetails', async (event, mac: string): Promise<DeviceInfo | null> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return null;
+  }
+  
+  try {
+    const device = networkModule.getDeviceDetails(mac);
+    return Object.keys(device).length > 0 ? device : null;
+  } catch (error) {
+    console.error('Error getting device details:', error);
+    return null;
+  }
+});
+
+ipcMain.handle('network:setBandwidthLimit', async (event, mac: string, downloadLimit: number, uploadLimit: number): Promise<boolean> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return false;
+  }
+  
+  try {
+    return networkModule.setBandwidthLimit(mac, downloadLimit, uploadLimit);
+  } catch (error) {
+    console.error('Error setting bandwidth limit:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('network:setDeviceBlocked', async (event, mac: string, blocked: boolean): Promise<boolean> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return false;
+  }
+  
+  try {
+    return networkModule.setDeviceBlocked(mac, blocked);
+  } catch (error) {
+    console.error('Error setting device blocked:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('network:removeTrafficControl', async (event, mac: string): Promise<boolean> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return false;
+  }
+  
+  try {
+    return networkModule.removeTrafficControl(mac);
+  } catch (error) {
+    console.error('Error removing traffic control:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('network:getActiveControls', async (): Promise<TrafficControl[]> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return [];
+  }
+  
+  try {
+    return networkModule.getActiveControls();
+  } catch (error) {
+    console.error('Error getting active controls:', error);
+    return [];
+  }
+});

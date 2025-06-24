@@ -1,5 +1,6 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const webpack = require('webpack');
 
 module.exports = {
   mode: process.env.NODE_ENV || 'development',
@@ -34,7 +35,23 @@ module.exports = {
     ]
   },
   resolve: {
-    extensions: ['.tsx', '.ts', '.js']
+    extensions: ['.tsx', '.ts', '.js'],
+    fallback: {
+      "path": false,
+      "fs": false,
+      "crypto": false,
+      "stream": false,
+      "util": false,
+      "buffer": false,
+      "assert": false,
+      "events": false,
+      "querystring": false,
+      "url": false,
+      "http": false,
+      "https": false,
+      "os": false,
+      "tty": false
+    }
   },
   output: {
     filename: 'renderer.js',
@@ -43,6 +60,20 @@ module.exports = {
   plugins: [
     new HtmlWebpackPlugin({
       template: './src/renderer/index.html'
+    }),
+    new webpack.DefinePlugin({
+      'global': 'window',
     })
-  ]
+  ],
+  devServer: {
+    port: 9000,
+    host: '127.0.0.1',
+    allowedHosts: 'all',
+    headers: {
+      'Access-Control-Allow-Origin': '*'
+    },
+    client: false,
+    hot: false,
+    liveReload: false
+  }
 };

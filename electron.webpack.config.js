@@ -2,11 +2,14 @@ const path = require('path');
 
 module.exports = {
   mode: process.env.NODE_ENV || 'development',
-  entry: './src/main/main.ts',
+  entry: {
+    main: './src/main/main.ts',
+    preload: './src/main/preload.ts'
+  },
   target: 'electron-main',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'main.js'
+    filename: '[name].js'
   },
   module: {
     rules: [
@@ -16,10 +19,17 @@ module.exports = {
         use: {
           loader: 'ts-loader'
         }
+      },
+      {
+        test: /\.node$/,
+        loader: 'node-loader'
       }
     ]
   },
   resolve: {
-    extensions: ['.ts', '.js']
+    extensions: ['.ts', '.js', '.node']
+  },
+  externals: {
+    '../../build/Release/network.node': 'commonjs ../../build/Release/network.node'
   }
 };
