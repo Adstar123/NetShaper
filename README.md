@@ -135,7 +135,7 @@ All major dependencies are included or automatically installed:
 -  **Node-gyp**: Installed via npm
 
 
-## 📄 License
+## License
 
 MIT License - see LICENSE file for details
 
