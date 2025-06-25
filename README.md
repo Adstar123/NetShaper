@@ -4,19 +4,15 @@ NetShaper is a **Windows-only** network management application that allows users
 
 ## Project Status
 
-**Stage 2 PARTIAL** - Network scanning operational with critical UI issues that need resolution
+**Stage 3A COMPLETE** - Device discovery fully operational with responsive UI
 
 ### Working Features
-- **Device Discovery**: Successfully scans local network using Windows ARP table
-- **DNS Name Resolution**: Resolves device hostnames (routers, printers, computers, smart devices)
-- **Real-Time Streaming**: Devices appear individually as discovered (when UI responsive)
+- **Fast Device Discovery**: Instantly scans local network using Windows ARP table without UI blocking
+- **Async DNS Resolution**: Optional background name resolution using Node.js async DNS 
+- **Real-Time Streaming**: Devices appear immediately with progressive name updates
 - **Professional UI**: Material UI interface with device listing and progress tracking
-- **C++ Backend**: High-performance native network module with comprehensive debug logging
-
-### Critical Issues
-- **UI Freezing**: Electron window becomes unresponsive during 1-minute network scan
-- **Device Duplication**: Each device appears twice in the final device list
-- **Reduced Discovery**: Device count dropped from 38 to 28 after recent filtering improvements
+- **Responsive Experience**: UI remains interactive during all network operations
+- **Universal Compatibility**: Dynamic DNS resolution works on any user's network
 
 ## System Requirements
 
@@ -64,8 +60,9 @@ npm start
 
 1. **Launch as Administrator**: Right-click PowerShell → "Run as Administrator"
 2. **Start NetShaper**: `npm start`
-3. **Scan Network**: Click "Scan Network" button in the app
-4. **View Results**: Devices appear in real-time (when UI responsive)
+3. **Scan Network**: Click "Scan Network" button to discover devices instantly
+4. **Resolve Names**: Click "Resolve Names" button to get device hostnames
+5. **View Results**: Devices appear immediately with names updating in real-time
 
 
 ## Technical Architecture
@@ -81,7 +78,7 @@ npm start
 - **C++ Native Module**: High-performance network operations using Windows APIs
 - **N-API**: Node.js addon interface for secure C++ integration
 - **Windows IP Helper API**: ARP table access for device discovery
-- **DNS Resolution**: Multiple lookup methods (getnameinfo, gethostbyaddr)
+- **Node.js Async DNS**: Non-blocking DNS resolution using dns.reverse()
 - **WinDivert**: Packet interception library (included, ready for traffic control)
 
 ### Security Features
@@ -93,23 +90,18 @@ npm start
 ## Current Capabilities
 
 ### Fully Working
-- **Device Discovery**: Finds network devices via Windows ARP table scanning
-- **Smart Filtering**: Removes multicast/broadcast addresses automatically
-- **DNS Name Resolution**: Resolves hostnames for routers, printers, computers
-- **Real-Time Updates**: Streaming device discovery with progress counter
-- **Professional UI**: Material UI with device cards and status information
+- **Fast Device Discovery**: Instant ARP table scanning with zero UI blocking
+- **Smart Filtering**: Removes multicast/broadcast addresses and duplicates automatically
+- **Async DNS Resolution**: Background name resolution using Node.js async DNS
+- **Real-Time Updates**: Devices appear immediately with names updating progressively
+- **Professional UI**: Material UI with device cards and responsive interactions
+- **Universal Compatibility**: Dynamic DNS works on any network configuration
 - **Debug Infrastructure**: Comprehensive logging for troubleshooting
 
-### Known Issues
-- **UI Responsiveness**: Window freezes during network scan (1 minute)
-- **Device Duplication**: Each device appears twice in final list
-- **Discovery Count**: Some devices missing compared to previous scans
-- **Performance**: DNS lookups block main thread despite streaming approach
-
-### In Development
-- **UI Threading**: Moving DNS lookups to background to prevent freezing
-- **Deduplication**: Fixing duplicate device entries in device list
-- **Traffic Control**: Bandwidth limiting and device blocking (next phase)
+### Ready for Next Phase
+- **Traffic Control Implementation**: Core infrastructure ready for bandwidth limiting
+- **Device Management**: Foundation in place for device control features
+- **Settings System**: Architecture supports user preferences and persistence
 
 ## Development Commands
 
@@ -139,30 +131,21 @@ npm run electron-dev          # Terminal 2: Start Electron
 ### PowerShell Output (Normal):
 ```
 Network module loaded successfully from: C:\...\build\Release\network.node
-DEBUG: Trying to resolve name for IP: 192.168.50.1
-DEBUG: DNS lookup success for 192.168.50.1: ZenWiFi_Pro_XT12-BA60 (flag: 0)
-DEBUG: Returning device name: ZenWiFi_Pro_XT12-BA60 for IP: 192.168.50.1
 ```
-
-### Electron Console Output (Issue):
-```
-Device found: {ip: '192.168.xx.x', mac: 'xxxxxxxx', name: 'ZenWiFi_Pro_XT12-BA60'...}
-Device found: {ip: '192.168.xx.x', mac: 'xxxxxxxx', name: 'ZenWiFi_Pro_XT12-BA60'...}
-[Each device appears exactly twice]
 ```
 
 ## Roadmap
 
-### Immediate Priorities
-1. **Fix UI Freezing**: Implement background threading for DNS lookups
-2. **Remove Duplicates**: Investigate and fix device duplication issue
-3. **Restore Device Count**: Review filtering to ensure all devices detected
+### Stage 3B - Traffic Control Interface (Next Phase)
+- **Device Control UI**: Add bandwidth limit sliders and block buttons to device cards
+- **Context Menus**: Implement right-click device management options
+- **Custom Nicknames**: Add persistent device naming and storage system
+- **Settings Panel**: Create preferences and configuration interface
 
-### Stage 3B - Traffic Control (Next)
-- **Device Control UI**: Bandwidth limit sliders and block buttons
-- **Context Menus**: Right-click device management
-- **Custom Nicknames**: Persistent device naming system
-- **Settings Panel**: Preferences and configuration options
+### Stage 3C - Traffic Control Implementation
+- **WinDivert Integration**: Implement actual packet filtering and bandwidth limiting
+- **Real-time Monitoring**: Add live bandwidth usage tracking
+- **Rule Persistence**: Save and restore traffic control settings
 
 ### Future Enhancements
 - **Usage Statistics**: Real-time bandwidth monitoring
@@ -193,4 +176,4 @@ MIT License - see LICENSE file for details
 
 **Built for Windows network management with modern web technologies and high-performance C++ backend.**
 
-**Current Focus**: Resolving UI freezing and duplication issues to achieve production-ready device discovery before implementing traffic control features.
+**Current Status**: Device discovery phase complete with responsive UI and dynamic DNS resolution. Ready to implement traffic control interface and functionality.
