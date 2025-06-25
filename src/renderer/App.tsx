@@ -28,6 +28,7 @@ const theme = createTheme({
 
 const App: React.FC = () => {
   const [scanning, setScanning] = useState(false);
+  const [resolvingNames, setResolvingNames] = useState(false);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [foundCount, setFoundCount] = useState(0);
@@ -35,17 +36,50 @@ const App: React.FC = () => {
   // Set up event listeners for streaming
   React.useEffect(() => {
     // Listen for individual devices
-    window.electronAPI.onDeviceFound((device: DeviceInfo) => {
-      setDevices(prev => [...prev, device]);
+    const removeDeviceListener = window.electronAPI.onDeviceFound((device: DeviceInfo) => {
+      setDevices(prev => {
+        // Check for duplicates based on MAC address
+        const exists = prev.some(existingDevice => existingDevice.mac === device.mac);
+        if (exists) {
+          console.log('Duplicate device skipped:', device.mac);
+          return prev;
+        }
+        console.log('Device found:', device);
+        return [...prev, device];
+      });
       setFoundCount(prev => prev + 1);
-      console.log('Device found:', device);
+    });
+    
+    // Listen for device updates (DNS resolved names)
+    const removeUpdateListener = window.electronAPI.onDeviceUpdated((updatedDevice: DeviceInfo) => {
+      setDevices(prev => {
+        return prev.map(device => {
+          if (device.mac === updatedDevice.mac) {
+            console.log('Device name updated:', updatedDevice.mac, 'from', device.name, 'to', updatedDevice.name);
+            return { ...device, name: updatedDevice.name };
+          }
+          return device;
+        });
+      });
     });
     
     // Listen for scan completion
-    window.electronAPI.onScanComplete(() => {
+    const removeScanListener = window.electronAPI.onScanComplete(() => {
       setScanning(false);
       console.log('Scan complete');
     });
+    
+    // Listen for async DNS resolution completion
+    const removeDnsListener = window.electronAPI.onAsyncDnsComplete(() => {
+      setResolvingNames(false);
+      console.log('Async DNS resolution complete');
+    });
+    
+    // Cleanup event listeners on unmount
+    return () => {
+      // Note: These would need to be implemented in preload.ts to properly remove listeners
+      // For now, we'll rely on React's cleanup
+    };
   }, []);
   
   // Network scan function using streaming
@@ -68,6 +102,26 @@ const App: React.FC = () => {
     }
   };
   
+  // Manual DNS resolution function - Use real async DNS resolution
+  const handleResolveNames = async () => {
+    setResolvingNames(true);
+    setError(null);
+    
+    try {
+      // Get devices that need name resolution
+      const devicesToResolve = devices.filter(device => device.name === device.ip);
+      console.log('Starting async DNS resolution for', devicesToResolve.length, 'devices');
+      
+      // Start async DNS resolution for all devices
+      window.electronAPI.startAsyncDnsResolution(devicesToResolve.map(d => ({ip: d.ip, mac: d.mac})));
+      
+    } catch (err) {
+      console.error('Name resolution failed:', err);
+      setError('Failed to resolve device names.');
+      setResolvingNames(false);
+    }
+  };
+  
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -81,10 +135,22 @@ const App: React.FC = () => {
               color="inherit" 
               startIcon={<NetworkScanIcon />}
               onClick={handleScan}
-              disabled={scanning}
+              disabled={scanning || resolvingNames}
+              sx={{ mr: 2 }}
             >
               {scanning ? 'Scanning...' : 'Scan Network'}
             </Button>
+            {devices.length > 0 && (
+              <Button 
+                color="inherit" 
+                onClick={handleResolveNames}
+                disabled={scanning || resolvingNames}
+                variant="outlined"
+                size="small"
+              >
+                {resolvingNames ? 'Resolving...' : 'Resolve Names'}
+              </Button>
+            )}
           </Toolbar>
         </AppBar>
         
@@ -118,8 +184,8 @@ const App: React.FC = () => {
               <Typography variant="h6" gutterBottom>
                 Found {devices.length} device(s):
               </Typography>
-              {devices.map((device, index) => (
-                <Box key={`${device.ip}-${device.mac}-${index}`} sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 1, mb: 1 }}>
+              {devices.map((device) => (
+                <Box key={device.mac} sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 1, mb: 1 }}>
                   <Typography variant="subtitle1">{device.name}</Typography>
                   <Typography variant="body2" color="text.secondary">
                     IP: {device.ip} | MAC: {device.mac} | Status: {device.isOnline ? 'Online' : 'Offline'}

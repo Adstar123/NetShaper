@@ -26,7 +26,9 @@ export interface TrafficControl {
 export interface NetworkModule {
   // Device discovery functions
   scanDevices(): DeviceInfo[];
+  scanDevicesFast(): DeviceInfo[];
   getDeviceDetails(mac: string): DeviceInfo;
+  resolveSingleDeviceName(ip: string): string;
   
   // Traffic control functions
   setBandwidthLimit(mac: string, downloadLimit: number, uploadLimit: number): boolean;

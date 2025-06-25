@@ -1,5 +1,7 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain } from 'electron';
 import * as path from 'path';
+import * as dns from 'dns';
+import { promisify } from 'util';
 import { NetworkModule, DeviceInfo, TrafficControl } from '../common/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -198,6 +200,36 @@ ipcMain.handle('network:scanDevices', async (): Promise<DeviceInfo[]> => {
   }
 });
 
+// Background DNS resolution function
+async function resolveDeviceNames(devices: any[]) {
+  console.log('Starting background DNS resolution for', devices.length, 'devices');
+  
+  for (const device of devices) {
+    try {
+      // Use the individual DNS resolution function (much faster)
+      const resolvedName = networkModule?.resolveSingleDeviceName(device.ip);
+      
+      if (resolvedName && resolvedName !== device.name && resolvedName !== device.ip) {
+        console.log('Resolved name for', device.ip, ':', resolvedName);
+        // Send updated device info if name was resolved
+        if (mainWindow) {
+          mainWindow.webContents.send('device:updated', {
+            ...device,
+            name: resolvedName
+          });
+        }
+      }
+    } catch (error) {
+      console.log('Failed to resolve name for device:', device.mac, error);
+    }
+    
+    // Small delay between DNS lookups to prevent overwhelming the network
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  
+  console.log('Background DNS resolution completed');
+}
+
 // New streaming scan method
 ipcMain.handle('network:startStreamingScan', async (): Promise<boolean> => {
   if (!networkModule) {
@@ -206,29 +238,150 @@ ipcMain.handle('network:startStreamingScan', async (): Promise<boolean> => {
   }
   
   try {
-    // Get all devices first
-    const devices = networkModule.scanDevices();
+    // Use fast scan first to get devices quickly without DNS resolution
+    const devices = networkModule.scanDevicesFast();
+    console.log('C++ returned', devices.length, 'devices from fast scan');
+    
+    // Create a set to track sent devices by MAC address to prevent duplicates
+    const sentDevices = new Set<string>();
+    const deviceList: any[] = [];
     
     // Send them one by one with delays
     for (let i = 0; i < devices.length; i++) {
+      const device = devices[i];
+      
+      // Skip if we've already sent this device (by MAC address)
+      if (sentDevices.has(device.mac)) {
+        console.log('Main.ts: Skipping duplicate device:', device.mac);
+        continue;
+      }
+      
+      // Mark as sent
+      sentDevices.add(device.mac);
+      deviceList.push(device);
+      
       // Send device to renderer
       if (mainWindow) {
-        mainWindow.webContents.send('device:found', devices[i]);
+        console.log('Main.ts: Sending device to renderer:', device.ip, device.mac);
+        mainWindow.webContents.send('device:found', device);
       }
       
       // Small delay to simulate real-time discovery
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 25));
     }
     
-    // Signal scan complete
+    // Signal initial scan complete
     if (mainWindow) {
       mainWindow.webContents.send('scan:complete');
     }
+    
+    // DISABLED: Background DNS resolution causes UI freezing
+    // TODO: Implement true async DNS resolution with worker threads
+    // setImmediate(() => {
+    //   resolveDeviceNames(deviceList).catch(error => {
+    //     console.error('Error in background DNS resolution:', error);
+    //   });
+    // });
     
     return true;
   } catch (error) {
     console.error('Error in streaming scan:', error);
     return false;
+  }
+});
+
+// Async DNS resolution using Node.js async DNS (completely non-blocking)
+ipcMain.handle('network:startAsyncDnsResolution', async (event, deviceData: Array<{ip: string, mac: string}>): Promise<boolean> => {
+  if (!deviceData || deviceData.length === 0) {
+    return false;
+  }
+  
+  try {
+    console.log('Starting async DNS resolution for', deviceData.length, 'devices');
+    
+    // Use Node.js async DNS resolution
+    const reverseAsync = promisify(dns.reverse);
+    
+    // Process each device asynchronously without blocking
+    const resolveDevice = async (device: {ip: string, mac: string}) => {
+      try {
+        console.log('Resolving DNS for:', device.ip);
+        const hostnames = await reverseAsync(device.ip);
+        
+        if (hostnames && hostnames.length > 0) {
+          let name = hostnames[0];
+          // Remove domain suffix if present
+          const dotPos = name.indexOf('.');
+          if (dotPos !== -1) {
+            name = name.substring(0, dotPos);
+          }
+          
+          console.log('DNS resolved:', device.ip, '→', name);
+          
+          // Send result to renderer with MAC address for matching
+          if (mainWindow) {
+            mainWindow.webContents.send('device:updated', {
+              ip: device.ip,
+              mac: device.mac,
+              name: name
+            });
+          }
+          
+          return { ip: device.ip, mac: device.mac, name, success: true };
+        }
+      } catch (error) {
+        console.log('DNS resolution failed for', device.ip, ':', error instanceof Error ? error.message : String(error));
+      }
+      
+      return { ip: device.ip, mac: device.mac, name: device.ip, success: false };
+    };
+    
+    // Start all DNS resolutions concurrently but with delays
+    const resolveWithDelay = async () => {
+      for (let i = 0; i < deviceData.length; i++) {
+        const device = deviceData[i];
+        
+        // Don't await - let them run concurrently
+        resolveDevice(device);
+        
+        // Small delay between starting each resolution
+        if (i < deviceData.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+      
+      // Wait a bit then signal completion
+      setTimeout(() => {
+        console.log('Async DNS resolution completed');
+        if (mainWindow) {
+          mainWindow.webContents.send('async-dns:complete');
+        }
+      }, deviceData.length * 200 + 2000); // Estimate completion time
+    };
+    
+    // Start the resolution process (non-blocking)
+    resolveWithDelay();
+    
+    return true;
+  } catch (error) {
+    console.error('Error starting async DNS resolution:', error);
+    return false;
+  }
+});
+
+// Manual DNS resolution for a single device (user-triggered)
+ipcMain.handle('network:resolveDeviceName', async (event, ip: string): Promise<string> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return ip;
+  }
+  
+  try {
+    const resolvedName = networkModule.resolveSingleDeviceName(ip);
+    return resolvedName || ip;
+  } catch (error) {
+    console.error('Error resolving device name:', error);
+    return ip;
   }
 });
 

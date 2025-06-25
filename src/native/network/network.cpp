@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <set>
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -55,13 +56,13 @@ std::string MacToString(const BYTE* mac) {
     return ss.str();
 }
 
-// Helper function to get device name using multiple methods
+// Helper function to get device name using FAST DNS lookup with timeout
 std::string GetDeviceName(const std::string& ip) {
     // Use Windows console output instead of std::cout
     char debug_msg[256];
-    sprintf_s(debug_msg, sizeof(debug_msg), "Trying to resolve name for IP: %s\n", ip.c_str());
+    sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: Trying to resolve name for IP: %s\n", ip.c_str());
     OutputDebugStringA(debug_msg);
-    printf("DEBUG: Trying to resolve name for IP: %s\n", ip.c_str());
+    printf("DEBUG: Fast DNS: Trying to resolve name for IP: %s\n", ip.c_str());
     fflush(stdout);
     
     // Initialize Winsock if not already done
@@ -81,7 +82,7 @@ std::string GetDeviceName(const std::string& ip) {
         fflush(stdout);
     }
     
-    // Method 1: Try reverse DNS lookup (getnameinfo)
+    // Method 1: FAST reverse DNS lookup (getnameinfo) - only try once with no flags
     char hostname[NI_MAXHOST];
     memset(hostname, 0, sizeof(hostname));
     
@@ -90,56 +91,16 @@ std::string GetDeviceName(const std::string& ip) {
     sa.sin_family = AF_INET;
     
     if (inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) == 1) {
-        // Try with different flags
-        std::vector<int> flags = {0, NI_NAMEREQD, NI_NOFQDN};
+        // Only try the fastest method with no flags
+        int result = getnameinfo((struct sockaddr*)&sa, sizeof(sa), 
+                                hostname, sizeof(hostname), 
+                                NULL, 0, 0);
         
-        for (int flag : flags) {
-            int result = getnameinfo((struct sockaddr*)&sa, sizeof(sa), 
-                                    hostname, sizeof(hostname), 
-                                    NULL, 0, flag);
-            
-            if (result == 0 && strlen(hostname) > 0) {
-                std::string name = hostname;
-                sprintf_s(debug_msg, sizeof(debug_msg), "DNS lookup success for %s: %s (flag: %d)\n", ip.c_str(), name.c_str(), flag);
-                OutputDebugStringA(debug_msg);
-                printf("DEBUG: DNS lookup success for %s: %s (flag: %d)\n", ip.c_str(), name.c_str(), flag);
-                fflush(stdout);
-                
-                // Only remove domain suffix if it's actually a hostname, not an IP
-                if (name != ip && name.find_first_not_of("0123456789.") != std::string::npos) {
-                    // This is a real hostname, remove domain suffix
-                    size_t dotPos = name.find('.');
-                    if (dotPos != std::string::npos) {
-                        name = name.substr(0, dotPos);
-                    }
-                }
-                
-                // Return if it's a meaningful name (not just IP)
-                if (name != ip && name.length() > 0) {
-                    sprintf_s(debug_msg, sizeof(debug_msg), "Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
-                    OutputDebugStringA(debug_msg);
-                    printf("DEBUG: Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
-                    fflush(stdout);
-                    return name;
-                }
-            } else {
-                sprintf_s(debug_msg, sizeof(debug_msg), "DNS lookup failed for %s (error: %d)\n", ip.c_str(), result);
-                OutputDebugStringA(debug_msg);
-                printf("DEBUG: DNS lookup failed for %s (error: %d)\n", ip.c_str(), result);
-                fflush(stdout);
-            }
-        }
-    }
-    
-    // Method 2: Try gethostbyaddr (older method, sometimes works when getnameinfo fails)
-    struct in_addr addr;
-    if (inet_pton(AF_INET, ip.c_str(), &addr) == 1) {
-        struct hostent* host = gethostbyaddr((char*)&addr, sizeof(addr), AF_INET);
-        if (host != NULL && host->h_name != NULL) {
-            std::string name = host->h_name;
-            sprintf_s(debug_msg, sizeof(debug_msg), "gethostbyaddr success for %s: %s\n", ip.c_str(), name.c_str());
+        if (result == 0 && strlen(hostname) > 0) {
+            std::string name = hostname;
+            sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: Success for %s: %s\n", ip.c_str(), name.c_str());
             OutputDebugStringA(debug_msg);
-            printf("DEBUG: gethostbyaddr success for %s: %s\n", ip.c_str(), name.c_str());
+            printf("DEBUG: Fast DNS: Success for %s: %s\n", ip.c_str(), name.c_str());
             fflush(stdout);
             
             // Only remove domain suffix if it's actually a hostname, not an IP
@@ -151,45 +112,31 @@ std::string GetDeviceName(const std::string& ip) {
                 }
             }
             
+            // Return if it's a meaningful name (not just IP)
             if (name != ip && name.length() > 0) {
-                sprintf_s(debug_msg, sizeof(debug_msg), "Returning device name from gethostbyaddr: %s for IP: %s\n", name.c_str(), ip.c_str());
+                sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
                 OutputDebugStringA(debug_msg);
-                printf("DEBUG: Returning device name from gethostbyaddr: %s for IP: %s\n", name.c_str(), ip.c_str());
+                printf("DEBUG: Fast DNS: Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
                 fflush(stdout);
                 return name;
             }
+        } else {
+            sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: Failed for %s (error: %d)\n", ip.c_str(), result);
+            OutputDebugStringA(debug_msg);
+            printf("DEBUG: Fast DNS: Failed for %s (error: %d)\n", ip.c_str(), result);
+            fflush(stdout);
         }
     }
     
-    // Method 3: Try NetBIOS name resolution (Windows-specific)
-    #ifdef _WIN32
-    // Convert IP to network byte order
-    unsigned long addr_long = inet_addr(ip.c_str());
-    if (addr_long != INADDR_NONE) {
-        char netbios_name[256];
-        DWORD size = sizeof(netbios_name);
-        
-        // Try to get NetBIOS name using GetAdaptersAddresses indirectly
-        // This is a simplified approach - in production you might want to use NBT calls
-        sprintf_s(debug_msg, sizeof(debug_msg), "Trying NetBIOS resolution for %s\n", ip.c_str());
-        OutputDebugStringA(debug_msg);
-        printf("DEBUG: Trying NetBIOS resolution for %s\n", ip.c_str());
-        fflush(stdout);
-        
-        // For now, we'll skip complex NetBIOS calls and rely on DNS methods
-        // but this is where you could add NBT (NetBIOS over TCP) calls
-    }
-    #endif
-    
-    sprintf_s(debug_msg, sizeof(debug_msg), "No name found for %s\n", ip.c_str());
+    sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: No name found for %s\n", ip.c_str());
     OutputDebugStringA(debug_msg);
-    printf("DEBUG: No name found for %s\n", ip.c_str());
+    printf("DEBUG: Fast DNS: No name found for %s\n", ip.c_str());
     fflush(stdout);
     return ""; // Return empty string if no name found
 }
 
-// Function to scan network devices using ARP table
-Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
+// Function to scan network devices using ARP table (fast scan without DNS)
+Napi::Array ScanDevicesFast(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
     
@@ -208,6 +155,7 @@ Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
             
             if (ret == NO_ERROR) {
                 DWORD deviceIndex = 0;
+                std::set<std::string> seenMacs; // Track unique MACs to prevent duplicates
                 
                 for (DWORD i = 0; i < pIpNetTable->dwNumEntries; i++) {
                     MIB_IPNETROW& entry = pIpNetTable->table[i];
@@ -236,7 +184,101 @@ Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
                     // Convert MAC address
                     std::string mac = MacToString(entry.bPhysAddr);
                     
-                    // Get device name
+                    // Skip duplicates
+                    if (seenMacs.count(mac) > 0) continue;
+                    seenMacs.insert(mac);
+                    
+                    // Use IP as device name initially (fast scan)
+                    std::string deviceName = ip;
+                    
+                    // Create device info
+                    DeviceInfo device;
+                    device.ip = ip;
+                    device.mac = mac;
+                    device.name = deviceName;
+                    device.vendor = "Unknown";
+                    device.isOnline = (entry.dwType == MIB_IPNET_TYPE_DYNAMIC || entry.dwType == MIB_IPNET_TYPE_STATIC);
+                    device.lastSeen = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()
+                    ).count();
+                    
+                    // Store in global map
+                    discoveredDevices[mac] = device;
+                    
+                    // Create JavaScript object for this device
+                    Napi::Object deviceObj = Napi::Object::New(env);
+                    deviceObj.Set("ip", Napi::String::New(env, ip));
+                    deviceObj.Set("mac", Napi::String::New(env, mac));
+                    deviceObj.Set("name", Napi::String::New(env, deviceName));
+                    deviceObj.Set("vendor", Napi::String::New(env, device.vendor));
+                    deviceObj.Set("isOnline", Napi::Boolean::New(env, device.isOnline));
+                    deviceObj.Set("lastSeen", Napi::Number::New(env, device.lastSeen));
+                    
+                    result.Set(deviceIndex++, deviceObj);
+                }
+            }
+            
+            free(pIpNetTable);
+        }
+    }
+    
+    return result;
+}
+
+// Function to scan network devices with DNS resolution (slower but with names)
+Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Array result = Napi::Array::New(env);
+    
+    // Clear previous scan results
+    discoveredDevices.clear();
+    
+    // Get ARP table
+    ULONG bufferSize = 0;
+    DWORD ret = GetIpNetTable(NULL, &bufferSize, FALSE);
+    
+    if (ret == ERROR_INSUFFICIENT_BUFFER) {
+        PMIB_IPNETTABLE pIpNetTable = (PMIB_IPNETTABLE)malloc(bufferSize);
+        
+        if (pIpNetTable != NULL) {
+            ret = GetIpNetTable(pIpNetTable, &bufferSize, FALSE);
+            
+            if (ret == NO_ERROR) {
+                DWORD deviceIndex = 0;
+                std::set<std::string> seenMacs; // Track unique MACs to prevent duplicates
+                
+                for (DWORD i = 0; i < pIpNetTable->dwNumEntries; i++) {
+                    MIB_IPNETROW& entry = pIpNetTable->table[i];
+                    
+                    // Skip invalid entries
+                    if (entry.dwType == MIB_IPNET_TYPE_INVALID) continue;
+                    
+                    // Convert IP address first to check if we should skip it
+                    struct in_addr addr;
+                    addr.s_addr = entry.dwAddr;
+                    std::string ip = inet_ntoa(addr);
+                    
+                    // Skip multicast addresses (224.x.x.x - 239.x.x.x)
+                    size_t pos1 = ip.find('.');
+                    if (pos1 != std::string::npos) {
+                        int firstOctet = std::stoi(ip.substr(0, pos1));
+                        if (firstOctet >= 224 && firstOctet <= 239) continue;
+                    }
+                    
+                    // Skip broadcast addresses
+                    if (ip.find(".255") != std::string::npos || ip == "255.255.255.255") continue;
+                    
+                    // Skip localhost
+                    if (ip.find("127.") == 0) continue;
+                    
+                    // Convert MAC address
+                    std::string mac = MacToString(entry.bPhysAddr);
+                    
+                    // Skip duplicates
+                    if (seenMacs.count(mac) > 0) continue;
+                    seenMacs.insert(mac);
+                    
+                    // Get device name with DNS lookup
                     std::string deviceName = GetDeviceName(ip);
                     if (deviceName.empty()) {
                         deviceName = ip; // Fallback to IP if no name found
@@ -247,7 +289,7 @@ Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
                     device.ip = ip;
                     device.mac = mac;
                     device.name = deviceName;
-                    device.vendor = "Unknown"; // Could be enhanced with OUI lookup
+                    device.vendor = "Unknown";
                     device.isOnline = (entry.dwType == MIB_IPNET_TYPE_DYNAMIC || entry.dwType == MIB_IPNET_TYPE_STATIC);
                     device.lastSeen = std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::system_clock::now().time_since_epoch()
@@ -385,6 +427,26 @@ Napi::Array GetActiveControls(const Napi::CallbackInfo& info) {
     return result;
 }
 
+// Function to resolve DNS name for a single IP address
+Napi::String ResolveSingleDeviceName(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected (string)").ThrowAsJavaScriptException();
+        return Napi::String::New(env, "");
+    }
+    
+    std::string ip = info[0].As<Napi::String>().Utf8Value();
+    
+    // Get device name with DNS lookup
+    std::string resolvedName = GetDeviceName(ip);
+    if (resolvedName.empty()) {
+        resolvedName = ip; // Fallback to IP if no name found
+    }
+    
+    return Napi::String::New(env, resolvedName);
+}
+
 // Function to get detailed device information
 Napi::Object GetDeviceDetails(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -439,7 +501,9 @@ Napi::Object Initialize(Napi::Env env, Napi::Object exports) {
     
     // Export network scanning functions
     exports.Set("scanDevices", Napi::Function::New(env, ScanDevices));
+    exports.Set("scanDevicesFast", Napi::Function::New(env, ScanDevicesFast));
     exports.Set("getDeviceDetails", Napi::Function::New(env, GetDeviceDetails));
+    exports.Set("resolveSingleDeviceName", Napi::Function::New(env, ResolveSingleDeviceName));
     
     // Export traffic control functions
     exports.Set("setBandwidthLimit", Napi::Function::New(env, SetBandwidthLimit));
