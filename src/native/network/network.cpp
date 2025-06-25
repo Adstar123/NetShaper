@@ -5,6 +5,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 
 // Windows-specific includes for network operations
 #ifdef _WIN32
@@ -54,25 +55,130 @@ std::string MacToString(const BYTE* mac) {
     return ss.str();
 }
 
-// Helper function to get device name from IP (tries NetBIOS/DNS lookup)
+// Helper function to get device name using multiple methods
 std::string GetDeviceName(const std::string& ip) {
-    char hostname[NI_MAXHOST];
+    // Use Windows console output instead of std::cout
+    char debug_msg[256];
+    sprintf_s(debug_msg, sizeof(debug_msg), "Trying to resolve name for IP: %s\n", ip.c_str());
+    OutputDebugStringA(debug_msg);
+    printf("DEBUG: Trying to resolve name for IP: %s\n", ip.c_str());
+    fflush(stdout);
     
-    struct sockaddr_in sa;
-    sa.sin_family = AF_INET;
-    inet_pton(AF_INET, ip.c_str(), &sa.sin_addr);
-    
-    // Try reverse DNS lookup
-    if (getnameinfo((struct sockaddr*)&sa, sizeof(sa), hostname, sizeof(hostname), NULL, 0, 0) == 0) {
-        std::string name = hostname;
-        // Remove domain suffix if present
-        size_t dotPos = name.find('.');
-        if (dotPos != std::string::npos) {
-            name = name.substr(0, dotPos);
+    // Initialize Winsock if not already done
+    static bool wsaInitialized = false;
+    if (!wsaInitialized) {
+        WSADATA wsaData;
+        int wsaResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+        if (wsaResult == 0) {
+            wsaInitialized = true;
+            OutputDebugStringA("Winsock initialized successfully\n");
+            printf("DEBUG: Winsock initialized successfully\n");
+        } else {
+            sprintf_s(debug_msg, sizeof(debug_msg), "Winsock initialization failed: %d\n", wsaResult);
+            OutputDebugStringA(debug_msg);
+            printf("DEBUG: Winsock initialization failed: %d\n", wsaResult);
         }
-        return name;
+        fflush(stdout);
     }
     
+    // Method 1: Try reverse DNS lookup (getnameinfo)
+    char hostname[NI_MAXHOST];
+    memset(hostname, 0, sizeof(hostname));
+    
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    
+    if (inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) == 1) {
+        // Try with different flags
+        std::vector<int> flags = {0, NI_NAMEREQD, NI_NOFQDN};
+        
+        for (int flag : flags) {
+            int result = getnameinfo((struct sockaddr*)&sa, sizeof(sa), 
+                                    hostname, sizeof(hostname), 
+                                    NULL, 0, flag);
+            
+            if (result == 0 && strlen(hostname) > 0) {
+                std::string name = hostname;
+                sprintf_s(debug_msg, sizeof(debug_msg), "DNS lookup success for %s: %s (flag: %d)\n", ip.c_str(), name.c_str(), flag);
+                OutputDebugStringA(debug_msg);
+                printf("DEBUG: DNS lookup success for %s: %s (flag: %d)\n", ip.c_str(), name.c_str(), flag);
+                fflush(stdout);
+                
+                // Remove domain suffix if present
+                size_t dotPos = name.find('.');
+                if (dotPos != std::string::npos) {
+                    name = name.substr(0, dotPos);
+                }
+                
+                // Return if it's a meaningful name (not just IP)
+                if (name != ip && name.length() > 0 && name.find('.') == std::string::npos) {
+                    sprintf_s(debug_msg, sizeof(debug_msg), "Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
+                    OutputDebugStringA(debug_msg);
+                    printf("DEBUG: Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
+                    fflush(stdout);
+                    return name;
+                }
+            } else {
+                sprintf_s(debug_msg, sizeof(debug_msg), "DNS lookup failed for %s (error: %d)\n", ip.c_str(), result);
+                OutputDebugStringA(debug_msg);
+                printf("DEBUG: DNS lookup failed for %s (error: %d)\n", ip.c_str(), result);
+                fflush(stdout);
+            }
+        }
+    }
+    
+    // Method 2: Try gethostbyaddr (older method, sometimes works when getnameinfo fails)
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip.c_str(), &addr) == 1) {
+        struct hostent* host = gethostbyaddr((char*)&addr, sizeof(addr), AF_INET);
+        if (host != NULL && host->h_name != NULL) {
+            std::string name = host->h_name;
+            sprintf_s(debug_msg, sizeof(debug_msg), "gethostbyaddr success for %s: %s\n", ip.c_str(), name.c_str());
+            OutputDebugStringA(debug_msg);
+            printf("DEBUG: gethostbyaddr success for %s: %s\n", ip.c_str(), name.c_str());
+            fflush(stdout);
+            
+            // Remove domain suffix
+            size_t dotPos = name.find('.');
+            if (dotPos != std::string::npos) {
+                name = name.substr(0, dotPos);
+            }
+            
+            if (name != ip && name.length() > 0) {
+                sprintf_s(debug_msg, sizeof(debug_msg), "Returning device name from gethostbyaddr: %s for IP: %s\n", name.c_str(), ip.c_str());
+                OutputDebugStringA(debug_msg);
+                printf("DEBUG: Returning device name from gethostbyaddr: %s for IP: %s\n", name.c_str(), ip.c_str());
+                fflush(stdout);
+                return name;
+            }
+        }
+    }
+    
+    // Method 3: Try NetBIOS name resolution (Windows-specific)
+    #ifdef _WIN32
+    // Convert IP to network byte order
+    unsigned long addr_long = inet_addr(ip.c_str());
+    if (addr_long != INADDR_NONE) {
+        char netbios_name[256];
+        DWORD size = sizeof(netbios_name);
+        
+        // Try to get NetBIOS name using GetAdaptersAddresses indirectly
+        // This is a simplified approach - in production you might want to use NBT calls
+        sprintf_s(debug_msg, sizeof(debug_msg), "Trying NetBIOS resolution for %s\n", ip.c_str());
+        OutputDebugStringA(debug_msg);
+        printf("DEBUG: Trying NetBIOS resolution for %s\n", ip.c_str());
+        fflush(stdout);
+        
+        // For now, we'll skip complex NetBIOS calls and rely on DNS methods
+        // but this is where you could add NBT (NetBIOS over TCP) calls
+    }
+    #endif
+    
+    sprintf_s(debug_msg, sizeof(debug_msg), "No name found for %s\n", ip.c_str());
+    OutputDebugStringA(debug_msg);
+    printf("DEBUG: No name found for %s\n", ip.c_str());
+    fflush(stdout);
     return ""; // Return empty string if no name found
 }
 
@@ -100,7 +206,7 @@ Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
                 for (DWORD i = 0; i < pIpNetTable->dwNumEntries; i++) {
                     MIB_IPNETROW& entry = pIpNetTable->table[i];
                     
-                    // Skip invalid entries
+                    // Only skip truly invalid entries - show everything else
                     if (entry.dwType == MIB_IPNET_TYPE_INVALID) continue;
                     
                     // Convert IP address
@@ -108,14 +214,8 @@ Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
                     addr.s_addr = entry.dwAddr;
                     std::string ip = inet_ntoa(addr);
                     
-                    // Skip localhost and broadcast addresses
-                    if (ip == "127.0.0.1" || ip.find("255.255.255") != std::string::npos) continue;
-                    
                     // Convert MAC address
                     std::string mac = MacToString(entry.bPhysAddr);
-                    
-                    // Skip empty MAC addresses
-                    if (mac == "00:00:00:00:00:00") continue;
                     
                     // Get device name
                     std::string deviceName = GetDeviceName(ip);
