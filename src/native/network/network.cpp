@@ -105,14 +105,17 @@ std::string GetDeviceName(const std::string& ip) {
                 printf("DEBUG: DNS lookup success for %s: %s (flag: %d)\n", ip.c_str(), name.c_str(), flag);
                 fflush(stdout);
                 
-                // Remove domain suffix if present
-                size_t dotPos = name.find('.');
-                if (dotPos != std::string::npos) {
-                    name = name.substr(0, dotPos);
+                // Only remove domain suffix if it's actually a hostname, not an IP
+                if (name != ip && name.find_first_not_of("0123456789.") != std::string::npos) {
+                    // This is a real hostname, remove domain suffix
+                    size_t dotPos = name.find('.');
+                    if (dotPos != std::string::npos) {
+                        name = name.substr(0, dotPos);
+                    }
                 }
                 
                 // Return if it's a meaningful name (not just IP)
-                if (name != ip && name.length() > 0 && name.find('.') == std::string::npos) {
+                if (name != ip && name.length() > 0) {
                     sprintf_s(debug_msg, sizeof(debug_msg), "Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
                     OutputDebugStringA(debug_msg);
                     printf("DEBUG: Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
@@ -139,10 +142,13 @@ std::string GetDeviceName(const std::string& ip) {
             printf("DEBUG: gethostbyaddr success for %s: %s\n", ip.c_str(), name.c_str());
             fflush(stdout);
             
-            // Remove domain suffix
-            size_t dotPos = name.find('.');
-            if (dotPos != std::string::npos) {
-                name = name.substr(0, dotPos);
+            // Only remove domain suffix if it's actually a hostname, not an IP
+            if (name != ip && name.find_first_not_of("0123456789.") != std::string::npos) {
+                // This is a real hostname, remove domain suffix
+                size_t dotPos = name.find('.');
+                if (dotPos != std::string::npos) {
+                    name = name.substr(0, dotPos);
+                }
             }
             
             if (name != ip && name.length() > 0) {
@@ -206,13 +212,26 @@ Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
                 for (DWORD i = 0; i < pIpNetTable->dwNumEntries; i++) {
                     MIB_IPNETROW& entry = pIpNetTable->table[i];
                     
-                    // Only skip truly invalid entries - show everything else
+                    // Skip invalid entries
                     if (entry.dwType == MIB_IPNET_TYPE_INVALID) continue;
                     
-                    // Convert IP address
+                    // Convert IP address first to check if we should skip it
                     struct in_addr addr;
                     addr.s_addr = entry.dwAddr;
                     std::string ip = inet_ntoa(addr);
+                    
+                    // Skip multicast addresses (224.x.x.x - 239.x.x.x)
+                    size_t pos1 = ip.find('.');
+                    if (pos1 != std::string::npos) {
+                        int firstOctet = std::stoi(ip.substr(0, pos1));
+                        if (firstOctet >= 224 && firstOctet <= 239) continue;
+                    }
+                    
+                    // Skip broadcast addresses
+                    if (ip.find(".255") != std::string::npos || ip == "255.255.255.255") continue;
+                    
+                    // Skip localhost
+                    if (ip.find("127.") == 0) continue;
                     
                     // Convert MAC address
                     std::string mac = MacToString(entry.bPhysAddr);

@@ -6,6 +6,15 @@ import { DeviceInfo, TrafficControl } from '../common/types';
 contextBridge.exposeInMainWorld('electronAPI', {
   // Network operations
   scanDevices: (): Promise<DeviceInfo[]> => ipcRenderer.invoke('network:scanDevices'),
+  startStreamingScan: (): Promise<boolean> => ipcRenderer.invoke('network:startStreamingScan'),
+  
+  // Event listeners for streaming
+  onDeviceFound: (callback: (device: DeviceInfo) => void) => {
+    ipcRenderer.on('device:found', (event, device) => callback(device));
+  },
+  onScanComplete: (callback: () => void) => {
+    ipcRenderer.on('scan:complete', () => callback());
+  },
   getDeviceDetails: (mac: string): Promise<DeviceInfo | null> => ipcRenderer.invoke('network:getDeviceDetails', mac),
   setBandwidthLimit: (mac: string, downloadLimit: number, uploadLimit: number): Promise<boolean> => 
     ipcRenderer.invoke('network:setBandwidthLimit', mac, downloadLimit, uploadLimit),
@@ -21,6 +30,9 @@ declare global {
   interface Window {
     electronAPI: {
       scanDevices: () => Promise<DeviceInfo[]>;
+      startStreamingScan: () => Promise<boolean>;
+      onDeviceFound: (callback: (device: DeviceInfo) => void) => void;
+      onScanComplete: (callback: () => void) => void;
       getDeviceDetails: (mac: string) => Promise<DeviceInfo | null>;
       setBandwidthLimit: (mac: string, downloadLimit: number, uploadLimit: number) => Promise<boolean>;
       setDeviceBlocked: (mac: string, blocked: boolean) => Promise<boolean>;

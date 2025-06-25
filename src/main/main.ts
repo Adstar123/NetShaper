@@ -198,6 +198,40 @@ ipcMain.handle('network:scanDevices', async (): Promise<DeviceInfo[]> => {
   }
 });
 
+// New streaming scan method
+ipcMain.handle('network:startStreamingScan', async (): Promise<boolean> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return false;
+  }
+  
+  try {
+    // Get all devices first
+    const devices = networkModule.scanDevices();
+    
+    // Send them one by one with delays
+    for (let i = 0; i < devices.length; i++) {
+      // Send device to renderer
+      if (mainWindow) {
+        mainWindow.webContents.send('device:found', devices[i]);
+      }
+      
+      // Small delay to simulate real-time discovery
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    // Signal scan complete
+    if (mainWindow) {
+      mainWindow.webContents.send('scan:complete');
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error in streaming scan:', error);
+    return false;
+  }
+});
+
 ipcMain.handle('network:getDeviceDetails', async (event, mac: string): Promise<DeviceInfo | null> => {
   if (!networkModule) {
     console.error('Network module not loaded');

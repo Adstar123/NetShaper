@@ -30,21 +30,40 @@ const App: React.FC = () => {
   const [scanning, setScanning] = useState(false);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [foundCount, setFoundCount] = useState(0);
   
-  // Network scan function using the native module
+  // Set up event listeners for streaming
+  React.useEffect(() => {
+    // Listen for individual devices
+    window.electronAPI.onDeviceFound((device: DeviceInfo) => {
+      setDevices(prev => [...prev, device]);
+      setFoundCount(prev => prev + 1);
+      console.log('Device found:', device);
+    });
+    
+    // Listen for scan completion
+    window.electronAPI.onScanComplete(() => {
+      setScanning(false);
+      console.log('Scan complete');
+    });
+  }, []);
+  
+  // Network scan function using streaming
   const handleScan = async () => {
     setScanning(true);
     setError(null);
+    setDevices([]); // Clear previous results
+    setFoundCount(0);
     
     try {
-      // Use the exposed electronAPI to scan for devices
-      const scannedDevices = await window.electronAPI.scanDevices();
-      setDevices(scannedDevices);
-      console.log('Found devices:', scannedDevices);
+      const success = await window.electronAPI.startStreamingScan();
+      if (!success) {
+        setError('Failed to start network scan. Make sure the application is running with administrator privileges.');
+        setScanning(false);
+      }
     } catch (err) {
       console.error('Scan failed:', err);
       setError('Failed to scan network. Make sure the application is running with administrator privileges.');
-    } finally {
       setScanning(false);
     }
   };
@@ -80,6 +99,12 @@ const App: React.FC = () => {
             Click "Scan Network" to begin discovering devices.
           </Typography>
           
+          {scanning && (
+            <Typography color="primary" sx={{ mb: 2 }}>
+              Scanning network... Found {foundCount} device(s) so far
+            </Typography>
+          )}
+          
           {/* Error display */}
           {error && (
             <Box sx={{ p: 2, bgcolor: 'error.light', color: 'error.contrastText', borderRadius: 1, mb: 2 }}>
@@ -94,7 +119,7 @@ const App: React.FC = () => {
                 Found {devices.length} device(s):
               </Typography>
               {devices.map((device, index) => (
-                <Box key={device.mac} sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 1, mb: 1 }}>
+                <Box key={`${device.ip}-${device.mac}-${index}`} sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 1, mb: 1 }}>
                   <Typography variant="subtitle1">{device.name}</Typography>
                   <Typography variant="body2" color="text.secondary">
                     IP: {device.ip} | MAC: {device.mac} | Status: {device.isOnline ? 'Online' : 'Offline'}
