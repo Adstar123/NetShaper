@@ -72,7 +72,7 @@ const App: React.FC = () => {
     // Listen for async DNS resolution completion
     const removeDnsListener = window.electronAPI.onAsyncDnsComplete(() => {
       setResolvingNames(false);
-      console.log('Async DNS resolution complete');
+      console.log('Automatic DNS resolution complete');
     });
     
     // Cleanup event listeners on unmount
@@ -82,9 +82,10 @@ const App: React.FC = () => {
     };
   }, []);
   
-  // Network scan function using streaming
+  // Network scan function using streaming with automatic DNS resolution
   const handleScan = async () => {
     setScanning(true);
+    setResolvingNames(true); // DNS resolution will happen automatically
     setError(null);
     setDevices([]); // Clear previous results
     setFoundCount(0);
@@ -94,11 +95,13 @@ const App: React.FC = () => {
       if (!success) {
         setError('Failed to start network scan. Make sure the application is running with administrator privileges.');
         setScanning(false);
+        setResolvingNames(false);
       }
     } catch (err) {
       console.error('Scan failed:', err);
       setError('Failed to scan network. Make sure the application is running with administrator privileges.');
       setScanning(false);
+      setResolvingNames(false);
     }
   };
   
@@ -138,19 +141,8 @@ const App: React.FC = () => {
               disabled={scanning || resolvingNames}
               sx={{ mr: 2 }}
             >
-              {scanning ? 'Scanning...' : 'Scan Network'}
+              {scanning ? (resolvingNames ? 'Scanning & Resolving...' : 'Scanning...') : 'Scan Network'}
             </Button>
-            {devices.length > 0 && (
-              <Button 
-                color="inherit" 
-                onClick={handleResolveNames}
-                disabled={scanning || resolvingNames}
-                variant="outlined"
-                size="small"
-              >
-                {resolvingNames ? 'Resolving...' : 'Resolve Names'}
-              </Button>
-            )}
           </Toolbar>
         </AppBar>
         
@@ -162,12 +154,18 @@ const App: React.FC = () => {
             This application allows you to manage and control network traffic for devices on your local network.
           </Typography>
           <Typography paragraph>
-            Click "Scan Network" to begin discovering devices.
+            Click "Scan Network" to begin discovering devices. Names will be resolved automatically.
           </Typography>
           
           {scanning && (
             <Typography color="primary" sx={{ mb: 2 }}>
-              Scanning network... Found {foundCount} device(s) so far
+              {resolvingNames ? 'Scanning network and resolving names...' : 'Scanning network...'} Found {foundCount} device(s) so far
+            </Typography>
+          )}
+          
+          {!scanning && resolvingNames && (
+            <Typography color="secondary" sx={{ mb: 2 }}>
+              Resolving device names in background...
             </Typography>
           )}
           
