@@ -8,7 +8,8 @@ import Typography from '@mui/material/Typography';
 import Container from '@mui/material/Container';
 import Button from '@mui/material/Button';
 import NetworkScanIcon from '@mui/icons-material/Wifi';
-import { DeviceInfo } from '../common/types';
+import { DeviceInfo, NetworkAdapter } from '../common/types';
+import AdapterSelector from './components/AdapterSelector';
 
 // Create a theme instance
 const theme = createTheme({
@@ -32,6 +33,7 @@ const App: React.FC = () => {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [foundCount, setFoundCount] = useState(0);
+  const [selectedAdapter, setSelectedAdapter] = useState<NetworkAdapter | undefined>();
   
   // Set up event listeners for streaming
   React.useEffect(() => {
@@ -153,7 +155,14 @@ const App: React.FC = () => {
           <Typography paragraph>
             This application allows you to manage and control network traffic for devices on your local network.
           </Typography>
-          <Typography paragraph>
+          
+          {/* Network Adapter Selection */}
+          <AdapterSelector 
+            onAdapterSelected={setSelectedAdapter}
+            selectedAdapter={selectedAdapter}
+          />
+          
+          <Typography paragraph sx={{ mt: 3 }}>
             Click "Scan Network" to begin discovering devices. Names will be resolved automatically.
           </Typography>
           

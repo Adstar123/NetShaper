@@ -511,3 +511,98 @@ ipcMain.handle('network:getActiveControls', async (): Promise<TrafficControl[]> 
     return [];
   }
 });
+
+// ARP functionality IPC handlers
+ipcMain.handle('network:getNetworkAdapters', async () => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return [];
+  }
+  
+  try {
+    return networkModule.enumerateNetworkAdapters();
+  } catch (error) {
+    console.error('Error enumerating network adapters:', error);
+    return [];
+  }
+});
+
+ipcMain.handle('network:initializeArp', async (event, adapterName: string): Promise<boolean> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return false;
+  }
+  
+  try {
+    return networkModule.initializeArp(adapterName);
+  } catch (error) {
+    console.error('Error initializing ARP:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('network:getNetworkTopology', async () => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return { isValid: false };
+  }
+  
+  try {
+    return networkModule.getNetworkTopology();
+  } catch (error) {
+    console.error('Error getting network topology:', error);
+    return { isValid: false };
+  }
+});
+
+ipcMain.handle('network:sendArpRequest', async (event, targetIp: string): Promise<boolean> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return false;
+  }
+  
+  try {
+    return networkModule.sendArpRequest(targetIp);
+  } catch (error) {
+    console.error('Error sending ARP request:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('network:getArpPerformanceStats', async () => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return { packetsSent: 0, packetsReceived: 0, sendErrors: 0, receiveErrors: 0, avgSendTimeMs: 0, avgReceiveTimeMs: 0 };
+  }
+  
+  try {
+    return networkModule.getArpPerformanceStats();
+  } catch (error) {
+    console.error('Error getting ARP performance stats:', error);
+    return { packetsSent: 0, packetsReceived: 0, sendErrors: 0, receiveErrors: 0, avgSendTimeMs: 0, avgReceiveTimeMs: 0 };
+  }
+});
+
+ipcMain.handle('network:cleanupArp', async (): Promise<void> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return;
+  }
+  
+  try {
+    networkModule.cleanupArp();
+  } catch (error) {
+    console.error('Error cleaning up ARP:', error);
+  }
+});
+
+// Cleanup ARP on app exit
+app.on('before-quit', () => {
+  try {
+    if (networkModule) {
+      networkModule.cleanupArp();
+    }
+  } catch (error) {
+    console.error('Error during cleanup:', error);
+  }
+});

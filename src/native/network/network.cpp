@@ -7,6 +7,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <iostream>
+#include <sstream>
+#include <iomanip>
+#include "arp.h"
 
 // Windows-specific includes for network operations
 #ifdef _WIN32
@@ -16,10 +20,19 @@
 #include <iostream>
 #include <sstream>
 #include <iomanip>
-// #include "lib/WinDivert/include/windivert.h"  // Commented out for now - will be used for actual packet manipulation
 
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
+#else
+// Linux-specific includes
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <unistd.h>
+#include <cstdio>
 #endif
 
 // Structure to hold device information
@@ -47,7 +60,11 @@ static std::map<std::string, TrafficControl> activeControls;
 static std::atomic<bool> scanningActive{false};
 
 // Helper function to convert MAC address bytes to string
+#ifdef _WIN32
 std::string MacToString(const BYTE* mac) {
+#else
+std::string MacToString(const unsigned char* mac) {
+#endif
     std::stringstream ss;
     for (int i = 0; i < 6; ++i) {
         if (i > 0) ss << ":";
@@ -58,13 +75,16 @@ std::string MacToString(const BYTE* mac) {
 
 // Helper function to get device name using FAST DNS lookup with timeout
 std::string GetDeviceName(const std::string& ip) {
+#ifdef _WIN32
+    char debug_msg[256]; // Single declaration for the entire function
     // Use Windows console output instead of std::cout
-    char debug_msg[256];
     sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: Trying to resolve name for IP: %s\n", ip.c_str());
     OutputDebugStringA(debug_msg);
+#endif
     printf("DEBUG: Fast DNS: Trying to resolve name for IP: %s\n", ip.c_str());
     fflush(stdout);
     
+#ifdef _WIN32
     // Initialize Winsock if not already done
     static bool wsaInitialized = false;
     if (!wsaInitialized) {
@@ -81,6 +101,7 @@ std::string GetDeviceName(const std::string& ip) {
         }
         fflush(stdout);
     }
+#endif
     
     // Method 1: FAST reverse DNS lookup (getnameinfo) - only try once with no flags
     char hostname[NI_MAXHOST];
@@ -98,8 +119,10 @@ std::string GetDeviceName(const std::string& ip) {
         
         if (result == 0 && strlen(hostname) > 0) {
             std::string name = hostname;
+#ifdef _WIN32
             sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: Success for %s: %s\n", ip.c_str(), name.c_str());
             OutputDebugStringA(debug_msg);
+#endif
             printf("DEBUG: Fast DNS: Success for %s: %s\n", ip.c_str(), name.c_str());
             fflush(stdout);
             
@@ -114,22 +137,28 @@ std::string GetDeviceName(const std::string& ip) {
             
             // Return if it's a meaningful name (not just IP)
             if (name != ip && name.length() > 0) {
+#ifdef _WIN32
                 sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
                 OutputDebugStringA(debug_msg);
+#endif
                 printf("DEBUG: Fast DNS: Returning device name: %s for IP: %s\n", name.c_str(), ip.c_str());
                 fflush(stdout);
                 return name;
             }
         } else {
+#ifdef _WIN32
             sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: Failed for %s (error: %d)\n", ip.c_str(), result);
             OutputDebugStringA(debug_msg);
+#endif
             printf("DEBUG: Fast DNS: Failed for %s (error: %d)\n", ip.c_str(), result);
             fflush(stdout);
         }
     }
     
+#ifdef _WIN32
     sprintf_s(debug_msg, sizeof(debug_msg), "Fast DNS: No name found for %s\n", ip.c_str());
     OutputDebugStringA(debug_msg);
+#endif
     printf("DEBUG: Fast DNS: No name found for %s\n", ip.c_str());
     fflush(stdout);
     return ""; // Return empty string if no name found
@@ -140,6 +169,7 @@ Napi::Array ScanDevicesFast(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
     
+#ifdef _WIN32
     // Clear previous scan results
     discoveredDevices.clear();
     
@@ -166,7 +196,9 @@ Napi::Array ScanDevicesFast(const Napi::CallbackInfo& info) {
                     // Convert IP address first to check if we should skip it
                     struct in_addr addr;
                     addr.s_addr = entry.dwAddr;
-                    std::string ip = inet_ntoa(addr);
+                    char ip_str[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+                    std::string ip = std::string(ip_str);
                     
                     // Skip multicast addresses (224.x.x.x - 239.x.x.x)
                     size_t pos1 = ip.find('.');
@@ -221,6 +253,10 @@ Napi::Array ScanDevicesFast(const Napi::CallbackInfo& info) {
             free(pIpNetTable);
         }
     }
+#else
+    // Linux stub - return empty array
+    printf("ScanDevicesFast: Not implemented on Linux\n");
+#endif
     
     return result;
 }
@@ -230,6 +266,7 @@ Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
     
+#ifdef _WIN32
     // Clear previous scan results
     discoveredDevices.clear();
     
@@ -256,7 +293,9 @@ Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
                     // Convert IP address first to check if we should skip it
                     struct in_addr addr;
                     addr.s_addr = entry.dwAddr;
-                    std::string ip = inet_ntoa(addr);
+                    char ip_str[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+                    std::string ip = std::string(ip_str);
                     
                     // Skip multicast addresses (224.x.x.x - 239.x.x.x)
                     size_t pos1 = ip.find('.');
@@ -314,6 +353,10 @@ Napi::Array ScanDevices(const Napi::CallbackInfo& info) {
             free(pIpNetTable);
         }
     }
+#else
+    // Linux stub - return empty array
+    printf("ScanDevices: Not implemented on Linux\n");
+#endif
     
     return result;
 }
@@ -491,6 +534,131 @@ Napi::Object GetDeviceDetails(const Napi::CallbackInfo& info) {
     return result;
 }
 
+// N-API wrapper functions for ARP functionality
+Napi::Array EnumerateNetworkAdapters(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Array result = Napi::Array::New(env);
+    
+    try {
+        auto adapters = GetNetworkAdapters();
+        
+        for (size_t i = 0; i < adapters.size(); ++i) {
+            const auto& adapter = adapters[i];
+            
+            Napi::Object adapterObj = Napi::Object::New(env);
+            adapterObj.Set("name", Napi::String::New(env, adapter.name));
+            adapterObj.Set("description", Napi::String::New(env, adapter.description));
+            adapterObj.Set("friendlyName", Napi::String::New(env, adapter.friendly_name));
+            adapterObj.Set("macAddress", Napi::String::New(env, adapter.mac_address));
+            adapterObj.Set("ipAddress", Napi::String::New(env, adapter.ip_address));
+            adapterObj.Set("subnetMask", Napi::String::New(env, adapter.subnet_mask));
+            adapterObj.Set("gateway", Napi::String::New(env, adapter.gateway));
+            adapterObj.Set("isActive", Napi::Boolean::New(env, adapter.is_active));
+            adapterObj.Set("isWireless", Napi::Boolean::New(env, adapter.is_wireless));
+            
+            result.Set(i, adapterObj);
+        }
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+    }
+    
+    return result;
+}
+
+Napi::Boolean InitializeArp(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected adapter name as string").ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+    
+    std::string adapterName = info[0].As<Napi::String>().Utf8Value();
+    
+    try {
+        bool result = InitializeArpManager(adapterName);
+        return Napi::Boolean::New(env, result);
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+Napi::Object GetNetworkTopologyInfo(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Object result = Napi::Object::New(env);
+    
+    try {
+        NetworkInfo topology = GetNetworkTopology();
+        
+        result.Set("localIp", Napi::String::New(env, topology.local_ip));
+        result.Set("subnetMask", Napi::String::New(env, topology.subnet_mask));
+        result.Set("gatewayIp", Napi::String::New(env, topology.gateway_ip));
+        result.Set("gatewayMac", Napi::String::New(env, topology.gateway_mac));
+        result.Set("interfaceName", Napi::String::New(env, topology.interface_name));
+        result.Set("interfaceMac", Napi::String::New(env, topology.interface_mac));
+        result.Set("subnetCidr", Napi::Number::New(env, topology.subnet_cidr));
+        result.Set("isValid", Napi::Boolean::New(env, topology.is_valid));
+        
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+    }
+    
+    return result;
+}
+
+Napi::Boolean SendArpRequestWrapper(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected target IP as string").ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+    
+    std::string targetIp = info[0].As<Napi::String>().Utf8Value();
+    
+    try {
+        bool result = SendArpRequest(targetIp);
+        return Napi::Boolean::New(env, result);
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+Napi::Object GetArpPerformanceStatsWrapper(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Object result = Napi::Object::New(env);
+    
+    try {
+        auto stats = GetArpPerformanceStats();
+        
+        result.Set("packetsSent", Napi::Number::New(env, static_cast<double>(stats.packets_sent)));
+        result.Set("packetsReceived", Napi::Number::New(env, static_cast<double>(stats.packets_received)));
+        result.Set("sendErrors", Napi::Number::New(env, static_cast<double>(stats.send_errors)));
+        result.Set("receiveErrors", Napi::Number::New(env, static_cast<double>(stats.receive_errors)));
+        result.Set("avgSendTimeMs", Napi::Number::New(env, stats.avg_send_time_ms));
+        result.Set("avgReceiveTimeMs", Napi::Number::New(env, stats.avg_receive_time_ms));
+        
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+    }
+    
+    return result;
+}
+
+Napi::Value CleanupArpWrapper(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    try {
+        CleanupArpManager();
+        return env.Undefined();
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+}
+
 // Initialize the module and export functions
 Napi::Object Initialize(Napi::Env env, Napi::Object exports) {
     // Initialize Winsock
@@ -510,6 +678,14 @@ Napi::Object Initialize(Napi::Env env, Napi::Object exports) {
     exports.Set("setDeviceBlocked", Napi::Function::New(env, SetDeviceBlocked));
     exports.Set("removeTrafficControl", Napi::Function::New(env, RemoveTrafficControl));
     exports.Set("getActiveControls", Napi::Function::New(env, GetActiveControls));
+    
+    // Export ARP functionality
+    exports.Set("enumerateNetworkAdapters", Napi::Function::New(env, EnumerateNetworkAdapters));
+    exports.Set("initializeArp", Napi::Function::New(env, InitializeArp));
+    exports.Set("getNetworkTopology", Napi::Function::New(env, GetNetworkTopologyInfo));
+    exports.Set("sendArpRequest", Napi::Function::New(env, SendArpRequestWrapper));
+    exports.Set("getArpPerformanceStats", Napi::Function::New(env, GetArpPerformanceStatsWrapper));
+    exports.Set("cleanupArp", Napi::Function::New(env, CleanupArpWrapper));
     
     return exports;
 }

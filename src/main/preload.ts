@@ -1,9 +1,12 @@
 // Preload script - exposes safe IPC methods to renderer process
 import { contextBridge, ipcRenderer } from 'electron';
-import { DeviceInfo, TrafficControl } from '../common/types';
+import { DeviceInfo, TrafficControl, NetworkAdapter, NetworkTopology, ArpPerformanceStats } from '../common/types';
+
+// Debug logging to help diagnose issues
+console.log('Preload script loading...');
 
 // Expose protected methods that allow the renderer process to work with the main process
-contextBridge.exposeInMainWorld('electronAPI', {
+const electronAPI = {
   // Network operations
   scanDevices: (): Promise<DeviceInfo[]> => ipcRenderer.invoke('network:scanDevices'),
   startStreamingScan: (): Promise<boolean> => ipcRenderer.invoke('network:startStreamingScan'),
@@ -31,7 +34,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeTrafficControl: (mac: string): Promise<boolean> => 
     ipcRenderer.invoke('network:removeTrafficControl', mac),
   getActiveControls: (): Promise<TrafficControl[]> => ipcRenderer.invoke('network:getActiveControls'),
-});
+  
+  // ARP functionality
+  getNetworkAdapters: (): Promise<NetworkAdapter[]> => ipcRenderer.invoke('network:getNetworkAdapters'),
+  initializeArp: (adapterName: string): Promise<boolean> => ipcRenderer.invoke('network:initializeArp', adapterName),
+  getNetworkTopology: (): Promise<NetworkTopology> => ipcRenderer.invoke('network:getNetworkTopology'),
+  sendArpRequest: (targetIp: string): Promise<boolean> => ipcRenderer.invoke('network:sendArpRequest', targetIp),
+  getArpPerformanceStats: (): Promise<ArpPerformanceStats> => ipcRenderer.invoke('network:getArpPerformanceStats'),
+  cleanupArp: (): Promise<void> => ipcRenderer.invoke('network:cleanupArp'),
+};
+
+// Debug logging
+console.log('About to expose electronAPI with keys:', Object.keys(electronAPI));
+console.log('getNetworkAdapters function exists:', typeof electronAPI.getNetworkAdapters);
+
+contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 
 // Type definitions for the exposed API
 declare global {
@@ -50,6 +67,14 @@ declare global {
       setDeviceBlocked: (mac: string, blocked: boolean) => Promise<boolean>;
       removeTrafficControl: (mac: string) => Promise<boolean>;
       getActiveControls: () => Promise<TrafficControl[]>;
+      
+      // ARP functionality
+      getNetworkAdapters: () => Promise<NetworkAdapter[]>;
+      initializeArp: (adapterName: string) => Promise<boolean>;
+      getNetworkTopology: () => Promise<NetworkTopology>;
+      sendArpRequest: (targetIp: string) => Promise<boolean>;
+      getArpPerformanceStats: () => Promise<ArpPerformanceStats>;
+      cleanupArp: () => Promise<void>;
     }
   }
 }

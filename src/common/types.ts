@@ -1,5 +1,40 @@
 // TypeScript interfaces for NetShaper network operations
 
+// Network adapter information
+export interface NetworkAdapter {
+  name: string;
+  description: string;
+  friendlyName: string;
+  macAddress: string;
+  ipAddress: string;
+  subnetMask: string;
+  gateway: string;
+  isActive: boolean;
+  isWireless: boolean;
+}
+
+// Network topology information
+export interface NetworkTopology {
+  localIp: string;
+  subnetMask: string;
+  gatewayIp: string;
+  gatewayMac: string;
+  interfaceName: string;
+  interfaceMac: string;
+  subnetCidr: number;
+  isValid: boolean;
+}
+
+// ARP performance statistics
+export interface ArpPerformanceStats {
+  packetsSent: number;
+  packetsReceived: number;
+  sendErrors: number;
+  receiveErrors: number;
+  avgSendTimeMs: number;
+  avgReceiveTimeMs: number;
+}
+
 export interface DeviceInfo {
   ip: string;
   mac: string;
@@ -35,6 +70,14 @@ export interface NetworkModule {
   setDeviceBlocked(mac: string, blocked: boolean): boolean;
   removeTrafficControl(mac: string): boolean;
   getActiveControls(): TrafficControl[];
+  
+  // ARP functionality
+  enumerateNetworkAdapters(): NetworkAdapter[];
+  initializeArp(adapterName: string): boolean;
+  getNetworkTopology(): NetworkTopology;
+  sendArpRequest(targetIp: string): boolean;
+  getArpPerformanceStats(): ArpPerformanceStats;
+  cleanupArp(): void;
 }
 
 // Application settings interface
@@ -43,6 +86,9 @@ export interface AppSettings {
   autoScanInterval: number; // seconds
   showOfflineDevices: boolean;
   theme: 'light' | 'dark' | 'auto';
+  selectedAdapter?: string; // Selected network adapter name
+  arpEnabled: boolean; // Whether ARP poisoning is enabled
+  performanceMonitoring: boolean; // Whether to show performance stats
 }
 
 // Custom device nickname interface
