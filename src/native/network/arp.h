@@ -42,7 +42,8 @@ struct ArpFrame {
 
 // Network adapter information
 struct NetworkAdapter {
-    std::string name;
+    std::string name;           // Windows adapter name (GUID)
+    std::string pcap_name;      // Npcap device name (\Device\NPF_{GUID})
     std::string description;
     std::string friendly_name;
     std::string mac_address;
@@ -100,8 +101,19 @@ public:
     bool sendArpReply(const std::string& sender_ip, const std::string& target_ip, 
                      const std::string& sender_mac, const std::string& target_mac);
     
+    // ARP poisoning operations (Phase 2)
+    bool startArpPoisoning(const std::string& target_ip, const std::string& target_mac);
+    bool stopArpPoisoning(const std::string& target_ip);
+    bool poisonArpCache(const std::string& victim_ip, const std::string& victim_mac, 
+                       const std::string& spoof_ip, const std::string& our_mac);
+    
     // Gateway discovery
     std::string discoverGatewayMac(const std::string& gateway_ip);
+    bool refreshGatewayMac(); // Refresh gateway MAC if not found during init
+    
+    // Adapter name mapping (Phase 2)
+    std::string mapAdapterNameToPcap(const std::string& windows_adapter_name);
+    std::vector<std::string> enumeratePcapDevices();
     
     // Utility functions
     static std::string macToString(const uint8_t* mac);
@@ -129,6 +141,15 @@ private:
     PerformanceStats perf_stats;
     std::string last_error;
     
+    // ARP poisoning state (Phase 2)
+    struct PoisoningTarget {
+        std::string ip;
+        std::string mac;
+        bool is_active;
+    };
+    std::vector<PoisoningTarget> poisoning_targets;
+    bool poisoning_active;
+    
     // Internal helper methods
     void setError(const std::string& error);
     bool validateAdapter(const std::string& adapter_name);
@@ -146,3 +167,8 @@ void CleanupArpManager();
 NetworkInfo GetNetworkTopology();
 bool SendArpRequest(const std::string& target_ip);
 ArpManager::PerformanceStats GetArpPerformanceStats();
+
+// Phase 2 exports
+bool StartArpPoisoning(const std::string& target_ip, const std::string& target_mac);
+bool StopArpPoisoning(const std::string& target_ip);
+std::vector<std::string> EnumeratePcapDevices();

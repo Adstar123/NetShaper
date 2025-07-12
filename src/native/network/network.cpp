@@ -555,6 +555,7 @@ Napi::Array EnumerateNetworkAdapters(const Napi::CallbackInfo& info) {
             adapterObj.Set("gateway", Napi::String::New(env, adapter.gateway));
             adapterObj.Set("isActive", Napi::Boolean::New(env, adapter.is_active));
             adapterObj.Set("isWireless", Napi::Boolean::New(env, adapter.is_wireless));
+            adapterObj.Set("pcapName", Napi::String::New(env, adapter.pcap_name));
             
             result.Set(i, adapterObj);
         }
@@ -659,6 +660,63 @@ Napi::Value CleanupArpWrapper(const Napi::CallbackInfo& info) {
     }
 }
 
+// Phase 2: ARP poisoning N-API wrapper functions
+Napi::Boolean StartArpPoisoningWrapper(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "Expected (target_ip: string, target_mac: string)").ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+    
+    std::string targetIp = info[0].As<Napi::String>().Utf8Value();
+    std::string targetMac = info[1].As<Napi::String>().Utf8Value();
+    
+    try {
+        bool result = StartArpPoisoning(targetIp, targetMac);
+        return Napi::Boolean::New(env, result);
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+Napi::Boolean StopArpPoisoningWrapper(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected target IP as string").ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+    
+    std::string targetIp = info[0].As<Napi::String>().Utf8Value();
+    
+    try {
+        bool result = StopArpPoisoning(targetIp);
+        return Napi::Boolean::New(env, result);
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+Napi::Array EnumeratePcapDevicesWrapper(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Array result = Napi::Array::New(env);
+    
+    try {
+        auto devices = EnumeratePcapDevices();
+        
+        for (size_t i = 0; i < devices.size(); ++i) {
+            result.Set(i, Napi::String::New(env, devices[i]));
+        }
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+    }
+    
+    return result;
+}
+
 // Initialize the module and export functions
 Napi::Object Initialize(Napi::Env env, Napi::Object exports) {
     // Initialize Winsock
@@ -686,6 +744,11 @@ Napi::Object Initialize(Napi::Env env, Napi::Object exports) {
     exports.Set("sendArpRequest", Napi::Function::New(env, SendArpRequestWrapper));
     exports.Set("getArpPerformanceStats", Napi::Function::New(env, GetArpPerformanceStatsWrapper));
     exports.Set("cleanupArp", Napi::Function::New(env, CleanupArpWrapper));
+    
+    // Export Phase 2: ARP poisoning functionality
+    exports.Set("startArpPoisoning", Napi::Function::New(env, StartArpPoisoningWrapper));
+    exports.Set("stopArpPoisoning", Napi::Function::New(env, StopArpPoisoningWrapper));
+    exports.Set("enumeratePcapDevices", Napi::Function::New(env, EnumeratePcapDevicesWrapper));
     
     return exports;
 }

