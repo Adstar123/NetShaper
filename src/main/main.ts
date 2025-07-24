@@ -596,6 +596,37 @@ ipcMain.handle('network:cleanupArp', async (): Promise<void> => {
   }
 });
 
+// ARP Poisoning IPC handlers
+ipcMain.handle('network:startArpPoisoning', async (event, targetIp: string, targetMac: string): Promise<boolean> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return false;
+  }
+  
+  try {
+    console.log(`Starting ARP poisoning for ${targetIp} (${targetMac})`);
+    return networkModule.startArpPoisoning(targetIp, targetMac);
+  } catch (error) {
+    console.error('Error starting ARP poisoning:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('network:stopArpPoisoning', async (event, targetIp: string): Promise<boolean> => {
+  if (!networkModule) {
+    console.error('Network module not loaded');
+    return false;
+  }
+  
+  try {
+    console.log(`Stopping ARP poisoning for ${targetIp}`);
+    return networkModule.stopArpPoisoning(targetIp);
+  } catch (error) {
+    console.error('Error stopping ARP poisoning:', error);
+    return false;
+  }
+});
+
 // Cleanup ARP on app exit
 app.on('before-quit', () => {
   try {

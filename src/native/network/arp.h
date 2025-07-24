@@ -3,6 +3,9 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 // Windows and Npcap includes
 #ifdef _WIN32
@@ -150,6 +153,36 @@ private:
     };
     std::vector<PoisoningTarget> poisoning_targets;
     bool poisoning_active;
+    
+    // Step 4: Continuous ARP Poisoning Worker
+    class PoisoningWorker {
+    private:
+        std::thread thread_;
+        std::atomic<bool> running_{false};
+        ArpManager* arp_manager_; // Reference to parent ArpManager
+        
+        struct Target {
+            std::string ip;
+            std::string mac;
+        };
+        std::vector<Target> targets_;
+        mutable std::mutex targets_mutex_;  // Protect targets_ vector
+        
+        void loop();
+        void sendSpoof(const Target& target);
+        
+    public:
+        explicit PoisoningWorker(ArpManager* manager) : arp_manager_(manager) {}
+        ~PoisoningWorker() { stopAll(); }
+        
+        bool start(const std::string& target_ip, const std::string& target_mac);
+        bool stop(const std::string& target_ip);
+        void stopAll();
+        bool isRunning() const { return running_.load(); }
+        std::vector<Target> getTargets() const;
+    };
+    
+    std::unique_ptr<PoisoningWorker> poisoning_worker_;
     
     // Internal helper methods
     void setError(const std::string& error);

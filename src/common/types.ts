@@ -47,6 +47,8 @@ export interface DeviceInfo {
   uploadLimit?: number;
   isBlocked?: boolean;
   hasTrafficControl?: boolean;
+  // ARP poisoning state
+  isPoisoned?: boolean;
 }
 
 export interface TrafficControl {
@@ -78,6 +80,10 @@ export interface NetworkModule {
   sendArpRequest(targetIp: string): boolean;
   getArpPerformanceStats(): ArpPerformanceStats;
   cleanupArp(): void;
+  
+  // ARP Poisoning functionality
+  startArpPoisoning(targetIp: string, targetMac: string): boolean;
+  stopArpPoisoning(targetIp: string): boolean;
 }
 
 // Application settings interface
