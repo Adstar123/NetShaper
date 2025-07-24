@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "build": "webpack --config webpack.config.js && webpack --config electron.webpack.config.js",
+    "build-native": "cd src/native/network && npx node-gyp rebuild --release",
     "rebuild": "electron-rebuild",
     "dev": "webpack serve --port 9000 --hot --host 127.0.0.1",
     "electron-dev": "cross-env NODE_ENV=development electron .",

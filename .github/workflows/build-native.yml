@@ -1,0 +1,51 @@
+name: Build Native Module
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    strategy:
+      matrix:
+        architecture: [x64, arm64]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+    
+    - name: Build native module
+      run: npm run build-native
+      env:
+        npm_config_target_arch: ${{ matrix.architecture }}
+    
+    - name: Copy built module to release folder
+      run: |
+        mkdir -p build/Release
+        copy "src\native\network\build\Release\network.node" "build\Release\network.node"
+      shell: cmd
+    
+    - name: Upload network.node artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: network-node-${{ matrix.architecture }}
+        path: build/Release/network.node
+        retention-days: 30
+    
+    - name: Test native module can be loaded
+      run: node -e "console.log('Testing native module load...'); try { require('./build/Release/network.node'); console.log('✓ Native module loaded successfully'); } catch(e) { console.error('✗ Failed to load native module:', e.message); process.exit(1); }"
