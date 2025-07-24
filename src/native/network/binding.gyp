@@ -24,14 +24,6 @@
                 "iphlpapi.lib"
               ]
             }],
-            ["target_arch=='arm64'", {
-              "libraries": [
-                "../lib/Npcap/Lib/ARM64/wpcap.lib",
-                "../lib/Npcap/Lib/ARM64/Packet.lib",
-                "ws2_32.lib",
-                "iphlpapi.lib"
-              ]
-            }],
             ["target_arch=='ia32'", {
               "libraries": [
                 "../lib/Npcap/Lib/wpcap.lib",
