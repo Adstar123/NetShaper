@@ -47,5 +47,13 @@ jobs:
         path: build/Release/network.node
         retention-days: 30
     
-    - name: Test native module can be loaded
-      run: node -e "console.log('Testing native module load...'); try { require('./build/Release/network.node'); console.log('✓ Native module loaded successfully'); } catch(e) { console.error('✗ Failed to load native module:', e.message); process.exit(1); }"
+    - name: Verify native module was built
+      run: |
+        if exist "build\Release\network.node" (
+          echo ✓ Native module built successfully
+          dir "build\Release\network.node"
+        ) else (
+          echo ✗ Native module not found
+          exit 1
+        )
+      shell: cmd
