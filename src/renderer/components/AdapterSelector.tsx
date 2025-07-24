@@ -25,19 +25,24 @@ import {
   Refresh
 } from '@mui/icons-material';
 import { NetworkAdapter, NetworkTopology, ArpPerformanceStats } from '../../common/types';
+import { useAdapter } from '../contexts/AdapterContext';
 
-interface AdapterSelectorProps {
-  onAdapterSelected: (adapter: NetworkAdapter) => void;
-  selectedAdapter?: NetworkAdapter;
-}
+const AdapterSelector: React.FC = () => {
+  const {
+    selectedAdapter,
+    setSelectedAdapter,
+    isInitializing,
+    setIsInitializing,
+    isInitialized,
+    setIsInitialized,
+    topology,
+    setTopology,
+  } = useAdapter();
 
-const AdapterSelector: React.FC<AdapterSelectorProps> = ({ onAdapterSelected, selectedAdapter }) => {
   const [adapters, setAdapters] = useState<NetworkAdapter[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [topology, setTopology] = useState<NetworkTopology | null>(null);
   const [performanceStats, setPerformanceStats] = useState<ArpPerformanceStats | null>(null);
-  const [arpInitialized, setArpInitialized] = useState(false);
 
   useEffect(() => {
     loadAdapters();
@@ -67,7 +72,28 @@ const AdapterSelector: React.FC<AdapterSelectorProps> = ({ onAdapterSelected, se
       // Auto-select first active adapter if none selected
       if (!selectedAdapter && adapters.length > 0) {
         const activeAdapter = adapters.find(a => a.isActive) || adapters[0];
-        onAdapterSelected(activeAdapter);
+        setSelectedAdapter(activeAdapter);
+        
+        // Auto-initialize ARP for the selected adapter
+        try {
+          setIsInitializing(true);
+          setIsInitialized(false);
+          
+          const success = await window.electronAPI.initializeArp(activeAdapter.name);
+          setIsInitialized(success);
+          
+          if (success) {
+            await loadNetworkTopology();
+            await loadPerformanceStats();
+          } else {
+            setError('Failed to initialize ARP for the selected adapter');
+          }
+        } catch (err) {
+          setError(`Failed to auto-initialize ARP: ${err}`);
+          setIsInitialized(false);
+        } finally {
+          setIsInitializing(false);
+        }
       }
     } catch (err) {
       setError(`Failed to load network adapters: ${err}`);
@@ -101,19 +127,28 @@ const AdapterSelector: React.FC<AdapterSelectorProps> = ({ onAdapterSelected, se
     const adapter = adapters.find(a => a.name === adapterName);
     
     if (adapter) {
-      onAdapterSelected(adapter);
+      setSelectedAdapter(adapter);
       
       // Initialize ARP for the selected adapter
       try {
+        setIsInitializing(true);
+        setIsInitialized(false);
+        setError(null);
+        
         const success = await window.electronAPI.initializeArp(adapter.name);
-        setArpInitialized(success);
+        setIsInitialized(success);
         
         if (success) {
-          loadNetworkTopology();
-          loadPerformanceStats();
+          await loadNetworkTopology();
+          await loadPerformanceStats();
+        } else {
+          setError('Failed to initialize ARP for the selected adapter');
         }
       } catch (err) {
         setError(`Failed to initialize ARP for adapter: ${err}`);
+        setIsInitialized(false);
+      } finally {
+        setIsInitializing(false);
       }
     }
   };
@@ -171,6 +206,7 @@ const AdapterSelector: React.FC<AdapterSelectorProps> = ({ onAdapterSelected, se
               value={selectedAdapter?.name || ''}
               label="Select Network Adapter"
               onChange={handleAdapterChange}
+              disabled={isInitializing}
             >
               {adapters.map((adapter) => (
                 <MenuItem key={adapter.name} value={adapter.name}>
@@ -216,9 +252,9 @@ const AdapterSelector: React.FC<AdapterSelectorProps> = ({ onAdapterSelected, se
                   icon={selectedAdapter.isActive ? <CheckCircle /> : <Error />}
                 />
                 <Chip 
-                  label={arpInitialized ? "ARP Ready" : "ARP Not Initialized"}
+                  label={isInitializing ? "Initializing..." : (isInitialized ? "ARP Ready" : "ARP Not Initialized")}
                   size="small"
-                  color={arpInitialized ? "success" : "warning"}
+                  color={isInitializing ? "info" : (isInitialized ? "success" : "warning")}
                   icon={<Info />}
                 />
               </Stack>
