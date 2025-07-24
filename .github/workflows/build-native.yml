@@ -36,7 +36,7 @@ jobs:
     
     - name: Copy built module to release folder
       run: |
-        mkdir -p build/Release
+        if not exist build\Release mkdir build\Release
         copy "src\native\network\build\Release\network.node" "build\Release\network.node"
       shell: cmd
     
