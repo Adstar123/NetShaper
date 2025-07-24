@@ -42,12 +42,15 @@ bool ArpManager::initialize(const std::string& adapter_name) {
     }
     
     auto start_time = std::chrono::high_resolution_clock::now();
+    printf("ARP Manager: Starting initialization for adapter '%s'\n", adapter_name.c_str());
     
     // Validate adapter name
     if (!validateAdapter(adapter_name)) {
         setError("Invalid adapter name: " + adapter_name);
+        printf("ARP Manager: ERROR - Adapter validation failed for '%s'\n", adapter_name.c_str());
         return false;
     }
+    printf("ARP Manager: Adapter validation successful\n");
     
     // Map Windows adapter name to Npcap device name (Phase 2 enhancement)
     std::string pcap_device_name = mapAdapterNameToPcap(adapter_name);
@@ -64,11 +67,11 @@ bool ArpManager::initialize(const std::string& adapter_name) {
     pcap_handle = pcap_open_live(pcap_device_name.c_str(), 65536, 1, 1000, errbuf);
     
     if (pcap_handle == nullptr) {
-        printf("ARP Manager: Failed to open pcap adapter '%s': %s\n", pcap_device_name.c_str(), errbuf);
+        printf("ARP Manager: ERROR - Failed to open pcap adapter '%s': %s\n", pcap_device_name.c_str(), errbuf);
         if (pcap_device_name != adapter_name) {
-            printf("ARP Manager: Phase 2 adapter mapping failed - this indicates Npcap configuration issues\n");
+            printf("ARP Manager: ERROR - Phase 2 adapter mapping failed - this indicates Npcap configuration issues\n");
         } else {
-            printf("ARP Manager: This is expected in Phase 1 - pcap requires device names like \\Device\\NPF_{GUID}\n");
+            printf("ARP Manager: ERROR - This is expected in Phase 1 - pcap requires device names like \\Device\\NPF_{GUID}\n");
         }
         pcap_handle = nullptr; // Set to null to indicate no pcap
         // Continue with initialization for fallback topology discovery
@@ -78,21 +81,53 @@ bool ArpManager::initialize(const std::string& adapter_name) {
     
     // Set non-blocking mode for performance (only if pcap is available)
     if (pcap_handle && pcap_setnonblock(pcap_handle, 1, errbuf) == -1) {
-        printf("ARP Manager: Failed to set non-blocking mode: %s (continuing for Phase 1 testing)\n", errbuf);
+        printf("ARP Manager: ERROR - Failed to set non-blocking mode: %s (continuing for Phase 1 testing)\n", errbuf);
         // Continue anyway for Phase 1 testing
     }
     
     // Discover network topology
+    printf("ARP Manager: Discovering network topology...\n");
     network_info = discoverNetworkTopology(adapter_name);
     if (!network_info.is_valid) {
-        printf("ARP Manager: Network topology discovery failed for '%s', trying alternative method\n", adapter_name.c_str());
+        printf("ARP Manager: ERROR - Network topology discovery failed for '%s', trying alternative method\n", adapter_name.c_str());
         // Try alternative topology discovery using Windows IP Helper API
         network_info = discoverNetworkTopologyAlternative();
         if (!network_info.is_valid) {
             setError("Failed to discover network topology using any method");
+            printf("ARP Manager: ERROR - Alternative topology discovery also failed\n");
             cleanup();
             return false;
         }
+    }
+    
+    // Ensure gateway MAC is resolved - Step 3 requirement
+    printf("ARP Manager: Checking gateway MAC resolution...\n");
+    if (network_info.gateway_mac.empty() || network_info.gateway_mac == "00:00:00:00:00:00") {
+        printf("ARP Manager: Gateway MAC not resolved, attempting discovery with retries...\n");
+        
+        // Retry gateway MAC discovery up to 3 times with increasing wait times
+        for (int retry = 0; retry < 3 && (network_info.gateway_mac.empty() || network_info.gateway_mac == "00:00:00:00:00:00"); retry++) {
+            printf("ARP Manager: Gateway MAC discovery attempt %d/3\n", retry + 1);
+            
+            std::string discovered_mac = discoverGatewayMac(network_info.gateway_ip);
+            if (!discovered_mac.empty() && discovered_mac != "00:00:00:00:00:00") {
+                network_info.gateway_mac = discovered_mac;
+                printf("ARP Manager: Gateway MAC successfully resolved: %s\n", discovered_mac.c_str());
+                break;
+            }
+            
+            // Wait progressively longer between retries (500ms, 1000ms, 2000ms)
+            int wait_time = 500 * (retry + 1);
+            printf("ARP Manager: Gateway MAC not found, waiting %dms before retry...\n", wait_time);
+            Sleep(wait_time);
+        }
+        
+        if (network_info.gateway_mac.empty() || network_info.gateway_mac == "00:00:00:00:00:00") {
+            printf("ARP Manager: WARNING - Gateway MAC could not be resolved after retries. This may affect ARP poisoning functionality.\n");
+            // Continue initialization - gateway MAC can be resolved later
+        }
+    } else {
+        printf("ARP Manager: Gateway MAC already resolved: %s\n", network_info.gateway_mac.c_str());
     }
     
     is_initialized = true;
@@ -102,8 +137,9 @@ bool ArpManager::initialize(const std::string& adapter_name) {
     
     // Log initialization performance
     char debug_msg[256];
-    sprintf_s(debug_msg, sizeof(debug_msg), "ARP Manager initialized in %lld microseconds\n", duration.count());
+    sprintf_s(debug_msg, sizeof(debug_msg), "ARP Manager initialized successfully in %lld microseconds\n", duration.count());
     OutputDebugStringA(debug_msg);
+    printf("ARP Manager: Initialization completed successfully\n");
     
     return true;
 }
@@ -367,6 +403,8 @@ bool ArpManager::sendArpReply(const std::string& sender_ip, const std::string& t
 }
 
 std::string ArpManager::discoverGatewayMac(const std::string& gateway_ip) {
+    printf("ARP Manager: Attempting to discover MAC for gateway %s...\n", gateway_ip.c_str());
+    
     // Try to find gateway MAC in ARP table first
     ULONG bufferSize = 0;
     DWORD result = GetIpNetTable(nullptr, &bufferSize, FALSE);
@@ -379,42 +417,68 @@ std::string ArpManager::discoverGatewayMac(const std::string& gateway_ip) {
         
         if (result == NO_ERROR) {
             struct in_addr gateway_addr;
-            inet_pton(AF_INET, gateway_ip.c_str(), &gateway_addr);
+            if (inet_pton(AF_INET, gateway_ip.c_str(), &gateway_addr) != 1) {
+                printf("ARP Manager: ERROR - Invalid gateway IP address format: %s\n", gateway_ip.c_str());
+                return "";
+            }
             
             for (DWORD i = 0; i < pIpNetTable->dwNumEntries; i++) {
                 if (pIpNetTable->table[i].dwAddr == gateway_addr.s_addr) {
-                    return macToString(pIpNetTable->table[i].bPhysAddr);
+                    std::string found_mac = macToString(pIpNetTable->table[i].bPhysAddr);
+                    printf("ARP Manager: Found gateway MAC in ARP table: %s\n", found_mac.c_str());
+                    return found_mac;
                 }
             }
+            printf("ARP Manager: Gateway MAC not found in ARP table (%d entries checked)\n", pIpNetTable->dwNumEntries);
+        } else {
+            printf("ARP Manager: ERROR - Failed to get ARP table: %lu\n", result);
         }
+    } else {
+        printf("ARP Manager: ERROR - Failed to get ARP table buffer size: %lu\n", result);
     }
     
     // If not found in ARP table and we have pcap handle, try ARP request
-    if (pcap_handle && sendArpRequest(gateway_ip)) {
-        // Wait briefly for response and check ARP table again (avoid recursion)
-        Sleep(500);
-        
-        // Check ARP table one more time after request
-        if (result == ERROR_INSUFFICIENT_BUFFER) {
-            auto buffer = std::make_unique<char[]>(bufferSize);
-            PMIB_IPNETTABLE pIpNetTable = reinterpret_cast<PMIB_IPNETTABLE>(buffer.get());
+    if (pcap_handle) {
+        printf("ARP Manager: Sending ARP request to discover gateway MAC...\n");
+        if (sendArpRequest(gateway_ip)) {
+            // Wait briefly for response and check ARP table again (avoid recursion)
+            printf("ARP Manager: Waiting for ARP response...\n");
+            Sleep(500);
             
-            result = GetIpNetTable(pIpNetTable, &bufferSize, FALSE);
+            // Re-query buffer size as it may have changed
+            bufferSize = 0;
+            result = GetIpNetTable(nullptr, &bufferSize, FALSE);
             
-            if (result == NO_ERROR) {
-                struct in_addr gateway_addr;
-                inet_pton(AF_INET, gateway_ip.c_str(), &gateway_addr);
+            if (result == ERROR_INSUFFICIENT_BUFFER) {
+                auto buffer = std::make_unique<char[]>(bufferSize);
+                PMIB_IPNETTABLE pIpNetTable = reinterpret_cast<PMIB_IPNETTABLE>(buffer.get());
                 
-                for (DWORD i = 0; i < pIpNetTable->dwNumEntries; i++) {
-                    if (pIpNetTable->table[i].dwAddr == gateway_addr.s_addr) {
-                        return macToString(pIpNetTable->table[i].bPhysAddr);
+                result = GetIpNetTable(pIpNetTable, &bufferSize, FALSE);
+                
+                if (result == NO_ERROR) {
+                    struct in_addr gateway_addr;
+                    inet_pton(AF_INET, gateway_ip.c_str(), &gateway_addr);
+                    
+                    for (DWORD i = 0; i < pIpNetTable->dwNumEntries; i++) {
+                        if (pIpNetTable->table[i].dwAddr == gateway_addr.s_addr) {
+                            std::string found_mac = macToString(pIpNetTable->table[i].bPhysAddr);
+                            printf("ARP Manager: Gateway MAC discovered via ARP request: %s\n", found_mac.c_str());
+                            return found_mac;
+                        }
                     }
+                } else {
+                    printf("ARP Manager: ERROR - Failed to re-query ARP table after request: %lu\n", result);
                 }
             }
+        } else {
+            printf("ARP Manager: ERROR - Failed to send ARP request for gateway discovery\n");
         }
+    } else {
+        printf("ARP Manager: WARNING - No pcap handle available for active ARP discovery\n");
     }
     
     // Return empty string if not found - this is acceptable
+    printf("ARP Manager: Gateway MAC discovery failed - returning empty\n");
     return "";
 }
 
@@ -829,7 +893,9 @@ NetworkInfo GetNetworkTopology() {
     if (!g_arp_manager) {
         return NetworkInfo{};
     }
-    return g_arp_manager->discoverNetworkTopology("");
+    // Return the stored network_info from the initialized ArpManager
+    // This ensures the UI gets the validated topology with proper gateway MAC
+    return g_arp_manager->getNetworkInfo();
 }
 
 bool SendArpRequest(const std::string& target_ip) {

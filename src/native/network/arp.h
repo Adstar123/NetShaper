@@ -95,6 +95,7 @@ public:
     // Network topology discovery
     NetworkInfo discoverNetworkTopology(const std::string& adapter_name);
     NetworkInfo discoverNetworkTopologyAlternative();
+    NetworkInfo getNetworkInfo() const { return network_info; }
     
     // ARP packet operations
     bool sendArpRequest(const std::string& target_ip);
